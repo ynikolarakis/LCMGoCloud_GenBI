@@ -4,7 +4,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { startDeepEnrich } from "@/services/api";
 async function pollUntilDone(jobId, onProgress) {
     while (true) {
-        const res = await fetch(`/api/v1/enrichment/deep-enrich/${jobId}/status`);
+        const res = await fetch(`/api/v1/enrichment/deep-enrich/${jobId}/status?t=${Date.now()}`);
         if (!res.ok)
             throw new Error("Poll failed");
         const data = await res.json();
@@ -52,12 +52,14 @@ export function DeepEnrichButton({ connectionId }) {
             jobIdRef.current = job_id;
             const pollResult = await pollUntilDone(job_id, setProgress);
             if (pollResult.status === "complete" && pollResult.summary) {
+                const lastEvent = pollResult.latest_event || {};
                 setResult({
                     tables: pollResult.summary.tables_enriched ?? 0,
                     columns: pollResult.summary.columns_enriched ?? 0,
                     glossary: pollResult.summary.glossary_terms ?? 0,
                     examples: pollResult.summary.example_queries ?? 0,
-                    duration: 0,
+                    inputTokens: lastEvent.input_tokens || 0,
+                    outputTokens: lastEvent.output_tokens || 0,
                 });
                 setRunning(false);
                 invalidateAll();
@@ -77,11 +79,15 @@ export function DeepEnrichButton({ connectionId }) {
         setError(null);
         setProgress(null);
     };
-    return (_jsxs(_Fragment, { children: [_jsx("button", { onClick: handleStart, disabled: running, className: "rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50", children: running ? "Deep Enriching..." : "Deep Enrich" }), (running || result || error) && (_jsx("div", { className: "fixed inset-0 z-50 flex items-center justify-center bg-black/40", children: _jsxs("div", { className: "w-full max-w-md rounded-lg bg-white p-6 shadow-xl", children: [_jsx("h3", { className: "mb-4 text-lg font-semibold text-gray-900", children: "Deep Enrichment" }), running && progress && (_jsxs("div", { children: [_jsx("p", { className: "mb-2 text-sm text-gray-600", children: progress.message }), _jsx("div", { className: "mb-2 h-2 overflow-hidden rounded-full bg-gray-200", children: progress.message.includes("analyzing") ? (_jsx("div", { className: "h-full rounded-full bg-purple-500", style: {
+    return (_jsxs(_Fragment, { children: [_jsx("button", { onClick: handleStart, disabled: running, className: "rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-700 disabled:opacity-50", children: running ? "Deep Enriching..." : "Deep Enrich" }), (running || result || error) && (_jsx("div", { className: "fixed inset-0 z-50 flex items-center justify-center bg-black/40", children: _jsxs("div", { className: "w-full max-w-md rounded-lg bg-white p-6 shadow-xl", children: [_jsx("h3", { className: "mb-4 text-lg font-semibold text-gray-900", children: "Deep Enrichment" }), running && progress && (_jsxs("div", { children: [_jsx("p", { className: "mb-2 text-sm text-gray-600", children: progress.message }), _jsx("div", { className: "mb-2 h-2 overflow-hidden rounded-full bg-gray-200", children: _jsx("div", { className: "h-full rounded-full bg-purple-500", style: progress.message.includes("generating") ? {
                                             width: "100%",
                                             animation: "pulse 2s ease-in-out infinite",
                                             opacity: 0.7,
-                                        } })) : (_jsx("div", { className: "h-full rounded-full bg-purple-500 transition-all", style: {
+                                        } : {
                                             width: `${Math.min(Math.round((progress.tablesAnalyzed / Math.max(progress.tablesTotal, 1)) * 100), 95)}%`,
-                                        } })) }), _jsxs("div", { className: "flex justify-between text-xs text-gray-400", children: [_jsxs("span", { children: [progress.tablesAnalyzed, "/", progress.tablesTotal, " tables explored"] }), progress.message.includes("analyzing") && (_jsx("span", { children: "Generating enrichment with AI..." })), (progress.inputTokens > 0 || progress.outputTokens > 0) && (_jsxs("span", { children: [((progress.inputTokens + progress.outputTokens) / 1000).toFixed(1), "K tokens"] }))] }), progress.message.includes("analyzing") && (_jsx("p", { className: "mt-2 text-xs text-gray-400", children: "This may take a few minutes for large databases. The page will update automatically." }))] })), running && !progress && (_jsx("p", { className: "text-sm text-gray-500", children: "Starting enrichment..." })), result && (_jsxs("div", { children: [_jsx("div", { className: "mb-3 rounded bg-green-50 p-3 text-sm text-green-800", children: "Enrichment complete!" }), _jsxs("div", { className: "grid grid-cols-2 gap-2 text-sm text-gray-600", children: [_jsxs("div", { children: ["Tables enriched: ", _jsx("strong", { children: result.tables })] }), _jsxs("div", { children: ["Columns enriched: ", _jsx("strong", { children: result.columns })] }), _jsxs("div", { children: ["Glossary terms: ", _jsx("strong", { children: result.glossary })] }), _jsxs("div", { children: ["Example queries: ", _jsx("strong", { children: result.examples })] })] }), _jsx("button", { onClick: handleClose, className: "mt-4 w-full rounded bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700", children: "Done" })] })), error && (_jsxs("div", { children: [_jsx("div", { className: "mb-3 rounded bg-red-50 p-3 text-sm text-red-800", children: error }), _jsx("button", { onClick: handleClose, className: "mt-2 rounded border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50", children: "Close" })] }))] }) }))] }));
+                                        } }) }), _jsxs("div", { className: "text-xs text-gray-400", children: [progress.tablesAnalyzed, "/", progress.tablesTotal, " tables explored"] }), progress.message.includes("generating") && (_jsx("p", { className: "mt-2 text-xs text-gray-400", children: "This may take a few minutes for large databases. The page will update automatically." }))] })), running && !progress && (_jsxs("div", { children: [_jsx("p", { className: "mb-2 text-sm text-gray-600", children: "Exploring database schema..." }), _jsx("div", { className: "mb-2 h-2 overflow-hidden rounded-full bg-gray-200", children: _jsx("div", { className: "h-full rounded-full bg-purple-500", style: {
+                                            width: "30%",
+                                            animation: "pulse 2s ease-in-out infinite",
+                                            opacity: 0.7,
+                                        } }) })] })), result && (_jsxs("div", { children: [_jsx("div", { className: "mb-3 rounded bg-green-50 p-3 text-sm text-green-800", children: "Enrichment complete!" }), _jsxs("div", { className: "grid grid-cols-2 gap-2 text-sm text-gray-600", children: [_jsxs("div", { children: ["Tables enriched: ", _jsx("strong", { children: result.tables })] }), _jsxs("div", { children: ["Columns enriched: ", _jsx("strong", { children: result.columns })] }), _jsxs("div", { children: ["Glossary terms: ", _jsx("strong", { children: result.glossary })] }), _jsxs("div", { children: ["Example queries: ", _jsx("strong", { children: result.examples })] })] }), (result.inputTokens > 0 || result.outputTokens > 0) && (_jsxs("div", { className: "mt-2 text-xs text-gray-400", children: ["Tokens: ", (result.inputTokens / 1000).toFixed(1), "K in / ", (result.outputTokens / 1000).toFixed(1), "K out"] })), _jsx("button", { onClick: handleClose, className: "mt-4 w-full rounded bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700", children: "Done" })] })), error && (_jsxs("div", { children: [_jsx("div", { className: "mb-3 rounded bg-red-50 p-3 text-sm text-red-800", children: error }), _jsx("button", { onClick: handleClose, className: "mt-2 rounded border border-gray-300 px-3 py-1 text-sm text-gray-700 hover:bg-gray-50", children: "Close" })] }))] }) }))] }));
 }

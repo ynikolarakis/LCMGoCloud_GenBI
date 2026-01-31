@@ -19,9 +19,9 @@ interface ProgressState {
 async function pollUntilDone(
   jobId: string,
   onProgress: (p: ProgressState) => void,
-): Promise<{ status: string; summary?: Record<string, number>; error?: string }> {
+): Promise<{ status: string; summary?: Record<string, number>; error?: string; latest_event?: Record<string, number> }> {
   while (true) {
-    const res = await fetch(`/api/v1/enrichment/deep-enrich/${jobId}/status`);
+    const res = await fetch(`/api/v1/enrichment/deep-enrich/${jobId}/status?t=${Date.now()}`);
     if (!res.ok) throw new Error("Poll failed");
     const data = await res.json();
 
@@ -53,7 +53,8 @@ export function DeepEnrichButton({ connectionId }: Props) {
     columns: number;
     glossary: number;
     examples: number;
-    duration: number;
+    inputTokens: number;
+    outputTokens: number;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const jobIdRef = useRef<string | null>(null);
@@ -81,12 +82,14 @@ export function DeepEnrichButton({ connectionId }: Props) {
       const pollResult = await pollUntilDone(job_id, setProgress);
 
       if (pollResult.status === "complete" && pollResult.summary) {
+        const lastEvent = pollResult.latest_event || {};
         setResult({
           tables: pollResult.summary.tables_enriched ?? 0,
           columns: pollResult.summary.columns_enriched ?? 0,
           glossary: pollResult.summary.glossary_terms ?? 0,
           examples: pollResult.summary.example_queries ?? 0,
-          duration: 0,
+          inputTokens: lastEvent.input_tokens || 0,
+          outputTokens: lastEvent.output_tokens || 0,
         });
         setRunning(false);
         invalidateAll();
@@ -128,38 +131,21 @@ export function DeepEnrichButton({ connectionId }: Props) {
               <div>
                 <p className="mb-2 text-sm text-gray-600">{progress.message}</p>
                 <div className="mb-2 h-2 overflow-hidden rounded-full bg-gray-200">
-                  {progress.message.includes("analyzing") ? (
-                    <div
-                      className="h-full rounded-full bg-purple-500"
-                      style={{
-                        width: "100%",
-                        animation: "pulse 2s ease-in-out infinite",
-                        opacity: 0.7,
-                      }}
-                    />
-                  ) : (
-                    <div
-                      className="h-full rounded-full bg-purple-500 transition-all"
-                      style={{
-                        width: `${Math.min(Math.round((progress.tablesAnalyzed / Math.max(progress.tablesTotal, 1)) * 100), 95)}%`,
-                      }}
-                    />
-                  )}
+                  <div
+                    className="h-full rounded-full bg-purple-500"
+                    style={progress.message.includes("generating") ? {
+                      width: "100%",
+                      animation: "pulse 2s ease-in-out infinite",
+                      opacity: 0.7,
+                    } : {
+                      width: `${Math.min(Math.round((progress.tablesAnalyzed / Math.max(progress.tablesTotal, 1)) * 100), 95)}%`,
+                    }}
+                  />
                 </div>
-                <div className="flex justify-between text-xs text-gray-400">
-                  <span>
-                    {progress.tablesAnalyzed}/{progress.tablesTotal} tables explored
-                  </span>
-                  {progress.message.includes("analyzing") && (
-                    <span>Generating enrichment with AI...</span>
-                  )}
-                  {(progress.inputTokens > 0 || progress.outputTokens > 0) && (
-                    <span>
-                      {((progress.inputTokens + progress.outputTokens) / 1000).toFixed(1)}K tokens
-                    </span>
-                  )}
+                <div className="text-xs text-gray-400">
+                  {progress.tablesAnalyzed}/{progress.tablesTotal} tables explored
                 </div>
-                {progress.message.includes("analyzing") && (
+                {progress.message.includes("generating") && (
                   <p className="mt-2 text-xs text-gray-400">
                     This may take a few minutes for large databases. The page will update automatically.
                   </p>
@@ -168,7 +154,19 @@ export function DeepEnrichButton({ connectionId }: Props) {
             )}
 
             {running && !progress && (
-              <p className="text-sm text-gray-500">Starting enrichment...</p>
+              <div>
+                <p className="mb-2 text-sm text-gray-600">Exploring database schema...</p>
+                <div className="mb-2 h-2 overflow-hidden rounded-full bg-gray-200">
+                  <div
+                    className="h-full rounded-full bg-purple-500"
+                    style={{
+                      width: "30%",
+                      animation: "pulse 2s ease-in-out infinite",
+                      opacity: 0.7,
+                    }}
+                  />
+                </div>
+              </div>
             )}
 
             {result && (
@@ -182,6 +180,11 @@ export function DeepEnrichButton({ connectionId }: Props) {
                   <div>Glossary terms: <strong>{result.glossary}</strong></div>
                   <div>Example queries: <strong>{result.examples}</strong></div>
                 </div>
+                {(result.inputTokens > 0 || result.outputTokens > 0) && (
+                  <div className="mt-2 text-xs text-gray-400">
+                    Tokens: {(result.inputTokens / 1000).toFixed(1)}K in / {(result.outputTokens / 1000).toFixed(1)}K out
+                  </div>
+                )}
                 <button
                   onClick={handleClose}
                   className="mt-4 w-full rounded bg-purple-600 px-3 py-2 text-sm font-medium text-white hover:bg-purple-700"

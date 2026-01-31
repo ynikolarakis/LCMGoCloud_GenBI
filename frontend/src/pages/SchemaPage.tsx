@@ -118,58 +118,29 @@ export function SchemaPage() {
         </div>
       )}
 
+      {/* Database-level enrichment — on top */}
+      {schemaQ.data && (
+        <DatabaseEnrichmentPanel connectionId={connectionId} />
+      )}
+
       {schemaQ.data && (
         <div className="mt-6 grid grid-cols-12 gap-6">
-          {/* Table list */}
+          {/* Schema Tree */}
           <div className="col-span-4">
-            <h3 className="mb-3 text-sm font-medium text-gray-700">
-              Tables ({schemaQ.data.table_count})
-            </h3>
-            <div className="space-y-1">
-              {schemaQ.data.tables.map((table) => (
-                <button
-                  key={table.id}
-                  onClick={() => {
-                    setSelectedTable(table);
-                    setSelectedColumn(null);
-                  }}
-                  className={`block w-full rounded px-3 py-2 text-left text-sm ${
-                    selectedTable?.id === table.id
-                      ? "bg-blue-50 text-blue-700 font-medium"
-                      : "text-gray-700 hover:bg-gray-100"
-                  }`}
-                >
-                  <span className="font-mono">
-                    {table.schema_name}.{table.table_name}
-                  </span>
-                  <span className="ml-2 text-xs text-gray-400">
-                    {table.columns.length} cols
-                    {table.row_count_estimate != null &&
-                      ` | ~${table.row_count_estimate.toLocaleString()} rows`}
-                  </span>
-                </button>
-              ))}
-            </div>
-
-            {/* Relationships */}
-            {schemaQ.data.relationships.length > 0 && (
-              <div className="mt-6">
-                <h3 className="mb-2 text-sm font-medium text-gray-700">
-                  Relationships ({schemaQ.data.relationships.length})
-                </h3>
-                <div className="space-y-1 text-xs text-gray-600">
-                  {schemaQ.data.relationships.map((rel) => (
-                    <div key={rel.id} className="rounded bg-gray-50 px-2 py-1">
-                      {rel.from_table}.{rel.from_column} →{" "}
-                      {rel.to_table}.{rel.to_column}
-                      <span className="ml-1 text-gray-400">
-                        ({rel.relationship_type})
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
+            <SchemaTree
+              tables={schemaQ.data.tables}
+              relationships={schemaQ.data.relationships}
+              selectedTable={selectedTable}
+              selectedColumn={selectedColumn}
+              onSelectTable={(table) => {
+                setSelectedTable(table);
+                setSelectedColumn(null);
+              }}
+              onSelectColumn={(table, col) => {
+                setSelectedTable(table);
+                setSelectedColumn(col);
+              }}
+            />
           </div>
 
           {/* Detail panel */}
@@ -197,14 +168,224 @@ export function SchemaPage() {
         </div>
       )}
 
-      {/* Database-level enrichment */}
-      {schemaQ.data && (
-        <DatabaseEnrichmentPanel connectionId={connectionId} />
-      )}
-
       {/* Example Queries */}
       {schemaQ.data && (
         <ExampleQueriesPanel connectionId={connectionId} />
+      )}
+    </div>
+  );
+}
+
+// ============================================================
+// Schema Tree
+// ============================================================
+
+function SchemaTree({
+  tables,
+  relationships,
+  selectedTable,
+  selectedColumn,
+  onSelectTable,
+  onSelectColumn,
+}: {
+  tables: TableInfo[];
+  relationships: { id: string; from_table: string; from_column: string; to_table: string; to_column: string; relationship_type: string }[];
+  selectedTable: TableInfo | null;
+  selectedColumn: ColumnInfo | null;
+  onSelectTable: (t: TableInfo) => void;
+  onSelectColumn: (t: TableInfo, c: ColumnInfo) => void;
+}) {
+  const [expandedTables, setExpandedTables] = useState<Set<string>>(new Set());
+
+  // Group tables by schema_name
+  const schemas = tables.reduce<Record<string, TableInfo[]>>((acc, t) => {
+    const key = t.schema_name || "default";
+    (acc[key] ??= []).push(t);
+    return acc;
+  }, {});
+
+  const [expandedSchemas, setExpandedSchemas] = useState<Set<string>>(
+    () => new Set(Object.keys(schemas)),
+  );
+
+  const toggleSchema = (s: string) => {
+    setExpandedSchemas((prev) => {
+      const next = new Set(prev);
+      next.has(s) ? next.delete(s) : next.add(s);
+      return next;
+    });
+  };
+
+  const toggleTable = (id: string) => {
+    setExpandedTables((prev) => {
+      const next = new Set(prev);
+      next.has(id) ? next.delete(id) : next.add(id);
+      return next;
+    });
+  };
+
+  const ChevronIcon = ({ open }: { open: boolean }) => (
+    <svg
+      className={`h-3.5 w-3.5 flex-shrink-0 text-gray-400 transition-transform duration-150 ${open ? "rotate-90" : ""}`}
+      fill="none"
+      viewBox="0 0 24 24"
+      stroke="currentColor"
+      strokeWidth={2}
+    >
+      <path strokeLinecap="round" strokeLinejoin="round" d="M9 5l7 7-7 7" />
+    </svg>
+  );
+
+  const DbIcon = () => (
+    <svg className="h-4 w-4 flex-shrink-0 text-indigo-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M20 7c0 1.657-3.582 3-8 3S4 8.657 4 7m16 0c0-1.657-3.582-3-8-3S4 5.343 4 7m16 0v10c0 1.657-3.582 3-8 3s-8-1.343-8-3V7m16 5c0 1.657-3.582 3-8 3s-8-1.343-8-3" />
+    </svg>
+  );
+
+  const TableIcon = () => (
+    <svg className="h-3.5 w-3.5 flex-shrink-0 text-blue-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      <path strokeLinecap="round" strokeLinejoin="round" d="M3.375 19.5h17.25m-17.25 0a1.125 1.125 0 01-1.125-1.125M3.375 19.5h7.5c.621 0 1.125-.504 1.125-1.125m-9.75 0V5.625m0 12.75v-1.5c0-.621.504-1.125 1.125-1.125m18.375 2.625V5.625m0 12.75c0 .621-.504 1.125-1.125 1.125m1.125-1.125v-1.5c0-.621-.504-1.125-1.125-1.125m0 3.75h-7.5A1.125 1.125 0 0112 18.375m9.75-12.75c0-.621-.504-1.125-1.125-1.125H3.375c-.621 0-1.125.504-1.125 1.125m19.5 0v1.5c0 .621-.504 1.125-1.125 1.125M2.25 5.625v1.5c0 .621.504 1.125 1.125 1.125m0 0h17.25m-17.25 0h7.5c.621 0 1.125.504 1.125 1.125M3.375 8.25c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125m17.25-3.75h-7.5c-.621 0-1.125.504-1.125 1.125m8.625-1.125c.621 0 1.125.504 1.125 1.125v1.5c0 .621-.504 1.125-1.125 1.125m-17.25 0h7.5m-7.5 0c-.621 0-1.125.504-1.125 1.125v1.5c0 .621.504 1.125 1.125 1.125M12 10.875v-1.5m0 1.5c0 .621-.504 1.125-1.125 1.125M12 10.875c0 .621.504 1.125 1.125 1.125m-2.25 0c.621 0 1.125.504 1.125 1.125M10.875 12h-7.5c-.621 0-1.125.504-1.125 1.125M12 12h7.5c.621 0 1.125.504 1.125 1.125" />
+    </svg>
+  );
+
+  const ColIcon = ({ pk, fk }: { pk: boolean; fk: boolean }) => (
+    <svg className={`h-3 w-3 flex-shrink-0 ${pk ? "text-amber-500" : fk ? "text-purple-500" : "text-gray-400"}`} fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+      {pk ? (
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15.75 5.25a3 3 0 013 3m3 0a6 6 0 01-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 1121.75 8.25z" />
+      ) : (
+        <path strokeLinecap="round" strokeLinejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zm0 9.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25h2.25A2.25 2.25 0 0120.25 6v2.25a2.25 2.25 0 01-2.25 2.25h-2.25a2.25 2.25 0 01-2.25-2.25V6z" />
+      )}
+    </svg>
+  );
+
+  return (
+    <div className="overflow-hidden rounded-xl border border-gray-200 bg-white shadow-sm">
+      {/* Header */}
+      <div className="border-b border-gray-100 bg-gray-50/50 px-4 py-3">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">
+          Explorer
+        </h3>
+      </div>
+
+      {/* Tree */}
+      <div className="max-h-[65vh] overflow-y-auto p-2">
+        {Object.entries(schemas).map(([schemaName, schemaTables]) => (
+          <div key={schemaName}>
+            {/* Schema / DB node */}
+            <button
+              onClick={() => toggleSchema(schemaName)}
+              className="group flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left transition-colors hover:bg-indigo-50"
+            >
+              <ChevronIcon open={expandedSchemas.has(schemaName)} />
+              <DbIcon />
+              <span className="text-sm font-semibold text-gray-800">{schemaName}</span>
+              <span className="ml-auto rounded-full bg-gray-100 px-2 py-0.5 text-[10px] font-medium text-gray-500 group-hover:bg-indigo-100 group-hover:text-indigo-600">
+                {schemaTables.length}
+              </span>
+            </button>
+
+            {/* Tables */}
+            {expandedSchemas.has(schemaName) && (
+              <div className="ml-3 border-l border-gray-200 pl-1">
+                {schemaTables.map((table, tIdx) => {
+                  const isLastTable = tIdx === schemaTables.length - 1;
+                  const isTableSelected = selectedTable?.id === table.id && !selectedColumn;
+                  return (
+                    <div key={table.id} className={isLastTable ? "" : ""}>
+                      {/* Table node */}
+                      <div className="flex items-center">
+                        <button
+                          onClick={() => toggleTable(table.id)}
+                          className="flex-shrink-0 rounded p-0.5 transition-colors hover:bg-gray-100"
+                        >
+                          <ChevronIcon open={expandedTables.has(table.id)} />
+                        </button>
+                        <button
+                          onClick={() => onSelectTable(table)}
+                          className={`ml-0.5 flex flex-1 items-center gap-1.5 rounded-md px-2 py-1.5 text-left transition-all ${
+                            isTableSelected
+                              ? "bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-200"
+                              : "text-gray-700 hover:bg-gray-50"
+                          }`}
+                        >
+                          <TableIcon />
+                          <span className="truncate font-mono text-xs">{table.table_name}</span>
+                          <span className={`ml-auto rounded-full px-1.5 py-0.5 text-[10px] font-medium ${
+                            isTableSelected ? "bg-blue-100 text-blue-600" : "bg-gray-100 text-gray-400"
+                          }`}>
+                            {table.columns.length}
+                          </span>
+                        </button>
+                      </div>
+
+                      {/* Columns */}
+                      {expandedTables.has(table.id) && (
+                        <div className="ml-6 border-l border-gray-100 pl-1 py-0.5">
+                          {table.columns.map((col) => {
+                            const isColSelected = selectedColumn?.id === col.id;
+                            return (
+                              <button
+                                key={col.id}
+                                onClick={() => onSelectColumn(table, col)}
+                                className={`group flex w-full items-center gap-1.5 rounded-md px-2 py-1 text-left transition-all ${
+                                  isColSelected
+                                    ? "bg-blue-50 text-blue-700 shadow-sm ring-1 ring-blue-200"
+                                    : "text-gray-600 hover:bg-gray-50"
+                                }`}
+                              >
+                                <ColIcon pk={col.is_primary_key} fk={col.is_foreign_key} />
+                                <span className="truncate font-mono text-[11px]">{col.column_name}</span>
+                                {col.is_primary_key && (
+                                  <span className="rounded bg-amber-100 px-1 py-px text-[9px] font-bold text-amber-700">
+                                    PK
+                                  </span>
+                                )}
+                                {col.is_foreign_key && (
+                                  <span className="rounded bg-purple-100 px-1 py-px text-[9px] font-bold text-purple-700">
+                                    FK
+                                  </span>
+                                )}
+                                <span className="ml-auto text-[10px] text-gray-400 group-hover:text-gray-500">
+                                  {col.data_type}
+                                </span>
+                              </button>
+                            );
+                          })}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+
+      {/* Relationships */}
+      {relationships.length > 0 && (
+        <div className="border-t border-gray-100 px-4 py-3">
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">
+            Relationships
+            <span className="ml-1 rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-medium text-gray-500">
+              {relationships.length}
+            </span>
+          </h4>
+          <div className="max-h-32 space-y-1 overflow-y-auto">
+            {relationships.map((rel) => (
+              <div key={rel.id} className="flex items-center gap-1.5 rounded-md bg-gray-50 px-2.5 py-1.5 text-xs text-gray-600">
+                <span className="font-mono text-[11px]">{rel.from_table}.{rel.from_column}</span>
+                <svg className="h-3 w-3 flex-shrink-0 text-gray-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13.5 4.5L21 12m0 0l-7.5 7.5M21 12H3" />
+                </svg>
+                <span className="font-mono text-[11px]">{rel.to_table}.{rel.to_column}</span>
+                <span className="ml-auto rounded bg-gray-200 px-1 py-px text-[9px] text-gray-500">
+                  {rel.relationship_type}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
       )}
     </div>
   );

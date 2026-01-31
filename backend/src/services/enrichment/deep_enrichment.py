@@ -260,8 +260,24 @@ class DeepEnrichmentAgent:
 
         logger.info("Deep enrichment prompt size: %d chars", len(prompt))
 
-        # Call LLM to produce enrichment
-        enrichment, usage = await self._invoke_llm(prompt)
+        # Call LLM with periodic progress updates so the UI stays alive
+        llm_task = asyncio.create_task(self._invoke_llm(prompt))
+        elapsed = 0
+        while not llm_task.done():
+            await asyncio.sleep(5)
+            elapsed += 5
+            if on_progress:
+                await on_progress({
+                    "phase": "analyzing",
+                    "message": f"AI is generating enrichment... ({elapsed}s elapsed)",
+                    "iteration": step + 1,
+                    "max_iterations": step + 2,
+                    "tables_analyzed": table_count,
+                    "tables_total": table_count,
+                    "input_tokens": total_input_tokens,
+                    "output_tokens": total_output_tokens,
+                })
+        enrichment, usage = await llm_task
         total_input_tokens += usage.get("input_tokens", 0)
         total_output_tokens += usage.get("output_tokens", 0)
 

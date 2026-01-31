@@ -156,7 +156,7 @@ resource "aws_iam_role_policy" "bedrock" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = "bedrock:InvokeModel"
+      Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
       Resource = [
         "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.bedrock_model_id}",
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
