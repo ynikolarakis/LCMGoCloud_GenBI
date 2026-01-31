@@ -1,0 +1,17 @@
+# GenBI Platform — Terraform Variables
+# Copy this file to terraform.tfvars and fill in your values.
+
+# Required
+environment = "staging" # "dev", "staging", or "prod"
+
+# Optional — override defaults as needed
+# aws_region       = "eu-west-1"
+# project_name     = "genbi"
+# db_instance_class = "db.t4g.micro"
+# db_name          = "genbi"
+# db_username      = "genbi_admin"
+# lambda_memory_size = 512
+# lambda_timeout     = 60
+# bedrock_model_id   = "anthropic.claude-3-5-sonnet-20241022-v2:0"
+# domain_name        = ""
+# alert_email        = "ops@example.com"
