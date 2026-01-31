@@ -88,6 +88,16 @@ export const updateExampleQuery = (connectionId, queryId, data) => client
     .put(`/enrichment/${connectionId}/example-queries/${queryId}`, data)
     .then((r) => r.data);
 export const deleteExampleQuery = (connectionId, queryId) => client.delete(`/enrichment/${connectionId}/example-queries/${queryId}`);
+// Enrichment — Value Descriptions
+export const fetchValueDescriptions = (columnId) => client
+    .get(`/columns/${columnId}/values`)
+    .then((r) => r.data);
+export const saveValueDescriptions = (columnId, values) => client
+    .put(`/columns/${columnId}/values`, { values })
+    .then((r) => r.data);
+export const suggestValueDescriptions = (columnId) => client
+    .post(`/columns/${columnId}/values/ai-suggest`)
+    .then((r) => r.data);
 // Enrichment — Score
 export const fetchEnrichmentScore = (connectionId) => client
     .get(`/connections/${connectionId}/enrichment-score`)

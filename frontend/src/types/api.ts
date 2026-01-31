@@ -276,6 +276,34 @@ export interface DeepEnrichCompleteEvent {
   duration_seconds: number;
 }
 
+// ============================================================
+// Value Descriptions
+// ============================================================
+
+export interface ColumnValueDescription {
+  id: string;
+  column_id: string;
+  value: string;
+  display_name: string | null;
+  description: string | null;
+  sort_order: number | null;
+  is_active: boolean;
+}
+
+export interface ColumnValueDescriptionCreate {
+  value: string;
+  display_name?: string;
+  description?: string;
+  sort_order?: number;
+  is_active?: boolean;
+}
+
+export interface ValueDescriptionSuggestion {
+  value: string;
+  display_name: string | null;
+  description: string | null;
+}
+
 export interface EnrichmentRecommendation {
   priority: number;
   category: string;

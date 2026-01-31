@@ -3,6 +3,8 @@
 import axios from "axios";
 import type {
   ColumnEnrichment,
+  ColumnValueDescription,
+  ColumnValueDescriptionCreate,
   Connection,
   ConnectionCreate,
   ConnectionListResponse,
@@ -26,6 +28,7 @@ import type {
   SchemaResponse,
   TableEnrichment,
   TableInfo,
+  ValueDescriptionSuggestion,
 } from "@/types/api";
 
 const client = axios.create({ baseURL: "/api/v1" });
@@ -192,6 +195,25 @@ export const updateExampleQuery = (
 
 export const deleteExampleQuery = (connectionId: string, queryId: string) =>
   client.delete(`/enrichment/${connectionId}/example-queries/${queryId}`);
+
+// Enrichment — Value Descriptions
+export const fetchValueDescriptions = (columnId: string) =>
+  client
+    .get<ColumnValueDescription[]>(`/columns/${columnId}/values`)
+    .then((r) => r.data);
+
+export const saveValueDescriptions = (
+  columnId: string,
+  values: ColumnValueDescriptionCreate[],
+) =>
+  client
+    .put<{ saved: number }>(`/columns/${columnId}/values`, { values })
+    .then((r) => r.data);
+
+export const suggestValueDescriptions = (columnId: string) =>
+  client
+    .post<ValueDescriptionSuggestion[]>(`/columns/${columnId}/values/ai-suggest`)
+    .then((r) => r.data);
 
 // Enrichment — Score
 export const fetchEnrichmentScore = (connectionId: string) =>

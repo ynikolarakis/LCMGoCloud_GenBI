@@ -250,15 +250,20 @@ async def save_value_descriptions(column_id: UUID, data: ColumnValuesUpdate):
     summary="Get AI suggestions for value descriptions",
 )
 async def suggest_value_descriptions(column_id: UUID, language: str = "en"):
+    import json
+    import logging
+
+    logger = logging.getLogger(__name__)
+
+    # 1. Get column metadata
     async with get_db() as conn:
         cursor = await conn.execute(
             """
-            SELECT dc.column_name, dt.table_name, ce.description,
-                   csd.distinct_values
+            SELECT dc.column_name, dc.data_type, dt.table_name, dt.schema_name,
+                   dt.connection_id, ce.description
             FROM discovered_columns dc
             JOIN discovered_tables dt ON dc.table_id = dt.id
             LEFT JOIN column_enrichment ce ON ce.column_id = dc.id
-            LEFT JOIN column_sample_data csd ON csd.column_id = dc.id
             WHERE dc.id = %s
             """,
             (str(column_id),),
@@ -267,17 +272,39 @@ async def suggest_value_descriptions(column_id: UUID, language: str = "en"):
         if row is None:
             raise HTTPException(status_code=404, detail="Column not found")
 
-    import json
-    distinct_values = row.get("distinct_values")
-    if distinct_values is None:
-        raise HTTPException(status_code=400, detail="No distinct values available. Run sample extraction first.")
-    if isinstance(distinct_values, str):
-        distinct_values = json.loads(distinct_values)
+    # 2. Query distinct values from user's database directly
+    from src.connectors.factory import ConnectorFactory
+    from src.services.secrets import SecretsManagerClient
+
+    connection_id = str(row["connection_id"])
+    schema_name = row["schema_name"] or "public"
+    table_name = row["table_name"]
+    column_name = row["column_name"]
+
+    try:
+        secrets = SecretsManagerClient()
+        config = await secrets.get_connection_config(connection_id)
+        connector = ConnectorFactory.create(config)
+        await connector.connect()
+        try:
+            full_table = f'"{schema_name}"."{table_name}"'
+            quoted_col = f'"{column_name}"'
+            query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
+            result = await connector.execute_query(query, timeout=10)
+            distinct_values = [str(r[0]) for r in result.rows if r[0] is not None]
+        finally:
+            await connector.disconnect()
+    except Exception as exc:
+        logger.warning("Failed to query distinct values for %s.%s: %s", table_name, column_name, exc)
+        raise HTTPException(status_code=400, detail=f"Could not fetch distinct values: {exc}")
+
+    if not distinct_values:
+        raise HTTPException(status_code=400, detail="No distinct values found for this column.")
 
     ai_service = AIEnrichmentService()
     return await ai_service.suggest_value_descriptions(
-        row["column_name"], row["table_name"],
-        row.get("description") or "", list(distinct_values), language,
+        column_name, table_name,
+        row.get("description") or "", distinct_values, language,
     )
 
 
