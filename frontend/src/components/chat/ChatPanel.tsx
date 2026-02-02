@@ -1,4 +1,4 @@
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useState } from "react";
 import { useChatStore } from "@/stores/chatStore";
 import { useDashboardStore } from "@/stores/dashboardStore";
 import { askQuestion, askQuestionStream } from "@/services/api";
@@ -11,6 +11,8 @@ export function ChatPanel() {
     messages,
     isLoading,
     connectionId,
+    modelId,
+    setModelId,
     addUserMessage,
     addAssistantMessage,
     addErrorMessage,
@@ -18,12 +20,20 @@ export function ChatPanel() {
     getHistory,
     conversationId,
   } = useChatStore();
-  const pinChart = useDashboardStore((s) => s.pinChart);
+  const { pinChart, loadDashboard } = useDashboardStore();
   const bottomRef = useRef<HTMLDivElement>(null);
+  const [pinToast, setPinToast] = useState<string | null>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  // Load dashboard when connection changes so pinChart can persist
+  useEffect(() => {
+    if (connectionId) {
+      loadDashboard(connectionId);
+    }
+  }, [connectionId, loadDashboard]);
 
   const lastResponse = messages
     .filter((m) => m.role === "assistant" && m.response)
@@ -38,6 +48,7 @@ export function ChatPanel() {
       question: text,
       conversation_id: conversationId ?? undefined,
       history: getHistory(),
+      model_id: modelId,
     };
 
     try {
@@ -66,10 +77,19 @@ export function ChatPanel() {
     if (!msg?.response) return;
     const chartType = selectChartType(msg.response);
     pinChart(msg.response.question, chartType, msg.response);
+    setPinToast("Pinned to dashboard!");
+    setTimeout(() => setPinToast(null), 2500);
   };
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col relative">
+      {/* Toast notification */}
+      {pinToast && (
+        <div className="absolute top-4 right-4 z-50 rounded-lg bg-green-600 px-4 py-2 text-sm font-medium text-white shadow-lg animate-fade-in">
+          {pinToast}
+        </div>
+      )}
+
       <div className="flex-1 space-y-4 overflow-y-auto p-4">
         {messages.length === 0 && (
           <div className="flex h-full items-center justify-center text-gray-400">
@@ -80,7 +100,8 @@ export function ChatPanel() {
           <ChatMessage
             key={msg.id}
             message={msg}
-            onPin={msg.response ? () => handlePin(msg.id) : undefined}
+            onPin={msg.response && msg.response.rows.length > 0 ? () => handlePin(msg.id) : undefined}
+            onFollowUp={handleSend}
           />
         ))}
         {isLoading && (
@@ -96,6 +117,8 @@ export function ChatPanel() {
         onSend={handleSend}
         disabled={isLoading || !connectionId}
         suggestions={lastResponse?.follow_up_questions}
+        modelId={modelId}
+        onModelChange={setModelId}
       />
     </div>
   );

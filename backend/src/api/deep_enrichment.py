@@ -6,15 +6,17 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import time
 from pathlib import Path
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from src.services.enrichment.deep_enrichment import DeepEnrichmentAgent
+from src.config import get_settings
+from src.services.enrichment.deep_enrichment import DeepEnrichmentAgent, DeepEnrichOptions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["deep-enrichment"])
@@ -22,6 +24,9 @@ router = APIRouter(tags=["deep-enrichment"])
 # File-based job store — works across multiple uvicorn workers
 _JOBS_DIR = Path("/tmp/genbi-deep-enrich-jobs")
 _JOBS_DIR.mkdir(exist_ok=True)
+
+_MANUALS_DIR = Path("/tmp/genbi-manuals")
+_MANUALS_DIR.mkdir(exist_ok=True)
 
 
 def _job_path(job_id: str) -> Path:
@@ -50,13 +55,74 @@ class DeepEnrichJobResponse(BaseModel):
     status: str
 
 
+class ManualUploadResponse(BaseModel):
+    manual_id: str
+    filename: str
+    size_bytes: int
+
+
+@router.post(
+    "/api/v1/enrichment/{connection_id}/manual",
+    response_model=ManualUploadResponse,
+    summary="Upload a database manual for deep enrichment",
+)
+async def upload_manual(connection_id: UUID, file: UploadFile = File(...)):
+    """Upload a PDF, DOCX, or TXT file to use as context during deep enrichment."""
+    settings = get_settings()
+    max_size = settings.deep_enrich_manual_max_size_mb * 1024 * 1024
+
+    # Validate file extension
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="No filename provided")
+    suffix = Path(file.filename).suffix.lower()
+    if suffix not in (".pdf", ".docx", ".txt"):
+        raise HTTPException(status_code=400, detail="Only PDF, DOCX, and TXT files are supported")
+
+    # Read and check size
+    content = await file.read()
+    if len(content) > max_size:
+        raise HTTPException(
+            status_code=400,
+            detail=f"File too large. Maximum size is {settings.deep_enrich_manual_max_size_mb}MB",
+        )
+
+    # Save file
+    manual_id = str(uuid4())
+    conn_dir = _MANUALS_DIR / str(connection_id)
+    conn_dir.mkdir(exist_ok=True)
+    file_path = conn_dir / f"{manual_id}{suffix}"
+    file_path.write_bytes(content)
+
+    # Pre-extract text and cache it
+    try:
+        from src.utils.document_parser import extract_text
+
+        text = extract_text(file_path)
+        text_path = conn_dir / f"{manual_id}.txt"
+        text_path.write_text(text, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Failed to pre-extract text from manual: %s", exc)
+
+    return ManualUploadResponse(
+        manual_id=manual_id,
+        filename=file.filename,
+        size_bytes=len(content),
+    )
+
+
 @router.post(
     "/api/v1/enrichment/{connection_id}/deep-enrich",
     response_model=DeepEnrichJobResponse,
     summary="Start deep enrichment agent",
 )
-async def start_deep_enrichment(connection_id: UUID):
-    """Start an async deep enrichment job."""
+async def start_deep_enrichment(
+    connection_id: UUID,
+    options: DeepEnrichOptions | None = None,
+):
+    """Start an async deep enrichment job with optional configuration."""
+    if options is None:
+        options = DeepEnrichOptions()
+
     job_id = str(uuid4())
     _write_job(job_id, {
         "status": "running",
@@ -66,6 +132,15 @@ async def start_deep_enrichment(connection_id: UUID):
         "error": None,
         "started_at": time.time(),
     })
+
+    # Resolve manual text if manual_id provided
+    manual_text: str | None = None
+    if options.manual_id:
+        text_path = _MANUALS_DIR / str(connection_id) / f"{options.manual_id}.txt"
+        if text_path.exists():
+            manual_text = text_path.read_text(encoding="utf-8")
+        else:
+            logger.warning("Manual text file not found: %s", text_path)
 
     async def _run():
         agent = DeepEnrichmentAgent()
@@ -81,7 +156,12 @@ async def start_deep_enrichment(connection_id: UUID):
                 except Exception as prog_exc:
                     logger.warning("Failed to write progress event: %s", prog_exc)
 
-            result = await agent.run(connection_id, on_progress=on_progress)
+            result = await agent.run(
+                connection_id,
+                on_progress=on_progress,
+                options=options,
+                manual_text=manual_text,
+            )
             job = _read_job(job_id) or {}
             job["status"] = "complete"
             job["result"] = result

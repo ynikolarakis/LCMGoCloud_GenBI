@@ -1,10 +1,201 @@
 """Prompts and schemas for the Deep Enrichment Agent."""
 
-DEEP_ENRICHMENT_SYSTEM_PROMPT = """\
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from src.services.enrichment.deep_enrichment import DeepEnrichOptions
+
+# Language code to display name mapping
+_LANG_NAMES = {
+    "el": "Greek",
+    "en": "English",
+    "fr": "French",
+    "de": "German",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "nl": "Dutch",
+    "tr": "Turkish",
+    "ar": "Arabic",
+    "zh": "Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "ru": "Russian",
+    "pl": "Polish",
+    "ro": "Romanian",
+    "bg": "Bulgarian",
+    "cs": "Czech",
+    "sv": "Swedish",
+    "da": "Danish",
+}
+
+
+def _get_lang_name(code: str) -> str:
+    return _LANG_NAMES.get(code, code)
+
+
+def _build_language_instructions(options: DeepEnrichOptions) -> str:
+    primary = _get_lang_name(options.primary_language)
+    if options.secondary_language:
+        secondary = _get_lang_name(options.secondary_language)
+        return (
+            f"All descriptions MUST be bilingual: {primary} as primary, {secondary} as secondary.\n"
+            f'Format: "{primary} text / {secondary} text"\n'
+            f"This applies to ALL text fields including:\n"
+            f"- Table display_name, description, business_purpose\n"
+            f"- Column display_name, description, business_meaning\n"
+            f"- Value description display_name AND description (e.g. display_name: \"Ενεργό / Active\", "
+            f"description: \"Ενεργή εγγραφή / Currently active record\")\n"
+            f"- Glossary term, definition\n"
+            f"- Example query question, description\n"
+            f"- Synonyms should include both {primary} and {secondary} terms."
+        )
+    return (
+        f"All descriptions, display names, glossary terms, and example queries "
+        f"MUST be written in {primary} ({options.primary_language})."
+    )
+
+
+def _build_context_section(options: DeepEnrichOptions) -> str:
+    parts = []
+    if options.company_name:
+        parts.append(f"Company: {options.company_name}")
+    if options.business_domain:
+        parts.append(f"Business domain: {options.business_domain}")
+    if parts:
+        return "## Business Context\n\n" + "\n".join(parts) + "\n"
+    return ""
+
+
+def _build_generate_instructions(options: DeepEnrichOptions) -> str:
+    sections = []
+    if not options.generate_tables:
+        sections.append('- Do NOT generate the "tables" array (omit it)')
+    if not options.generate_columns:
+        sections.append('- Do NOT generate the "columns" array (omit it)')
+    if not options.generate_values:
+        sections.append('- Do NOT generate the "value_descriptions" array (omit it)')
+    if not options.generate_glossary:
+        sections.append('- Do NOT generate the "glossary" array (omit it)')
+    if not options.generate_examples:
+        sections.append('- Do NOT generate the "example_queries" array (omit it)')
+    if sections:
+        return "\n## Generation Scope\n\n" + "\n".join(sections) + "\n"
+    return ""
+
+
+def build_deep_enrichment_prompt(
+    *,
+    schema_description: str,
+    exploration_data: str,
+    total_tables: int,
+    total_columns: int,
+    options: DeepEnrichOptions,
+    manual_context: str = "",
+    existing_tables: dict[str, bool] | None = None,
+    existing_columns: set[str] | None = None,
+    column_value_guidance: dict[str, str] | None = None,
+    software_guidance: str = "",
+) -> str:
+    """Build the full prompt for deep enrichment with dynamic configuration."""
+    language_instructions = _build_language_instructions(options)
+    context_section = _build_context_section(options)
+    generate_section = _build_generate_instructions(options)
+
+    # Manual documentation section
+    manual_section = ""
+    if manual_context:
+        manual_section = (
+            "\n## Database Documentation (provided by user)\n\n"
+            f"{manual_context}\n\n"
+            "Use this documentation to improve the accuracy and detail of your enrichment. "
+            "The documentation may contain table descriptions, column meanings, business rules, "
+            "and other context that should be reflected in your output.\n"
+        )
+
+    # Software guidance section
+    software_section = ""
+    if software_guidance:
+        software_section = (
+            "\n## Known Software Documentation\n\n"
+            "This database belongs to a known software product. Use the following "
+            "documentation to provide accurate, software-specific enrichment:\n\n"
+            f"{software_guidance}\n"
+        )
+
+    # Additional instructions
+    additional = ""
+    if options.additional_instructions:
+        additional = (
+            "\n## Additional Instructions from User\n\n"
+            f"{options.additional_instructions}\n"
+        )
+
+    # Per-column value description guidance
+    value_guidance_section = ""
+    if column_value_guidance:
+        guidance_lines = []
+        for col_key, guidance in column_value_guidance.items():
+            guidance_lines.append(f"- **{col_key}**: {guidance}")
+        value_guidance_section = (
+            "\n## Value Description Guidance (per-column, from user)\n\n"
+            "IMPORTANT: Follow these specific instructions when generating value descriptions "
+            "for the columns listed below. The user has provided guidance on how their values "
+            "should be named or described:\n\n"
+            + "\n".join(guidance_lines) + "\n"
+        )
+
+    # Existing enrichment note
+    existing_note = ""
+    if existing_tables or existing_columns:
+        existing_note = (
+            "\n## Existing Enrichment\n\n"
+            "The following already have enrichment. You MUST still include them in your output "
+            "to ensure completeness, but you can use simpler descriptions if needed.\n"
+        )
+
+    # Build bilingual or monolingual JSON examples
+    if options.secondary_language:
+        primary = _get_lang_name(options.primary_language)
+        secondary = _get_lang_name(options.secondary_language)
+        value_example = (
+            f'{{"value": "A", "display_name": "Ενεργό / Active", '
+            f'"description": "Ενεργή εγγραφή στο σύστημα / Currently active record"}}'
+        )
+        table_example = (
+            f'"display_name": "Ανθρώπινο Όνομα / Human Name",\n'
+            f'      "description": "{primary} description / {secondary} description"'
+        )
+        col_example = (
+            f'"display_name": "Ανθρώπινο Όνομα / Human Name",\n'
+            f'      "description": "{primary} meaning / {secondary} meaning",\n'
+            f'      "business_meaning": "{primary} context / {secondary} context"'
+        )
+        glossary_example = (
+            f'"term": "Έσοδα / Revenue",\n'
+            f'      "definition": "Συνολικό εισόδημα από πωλήσεις / Total income from sales"'
+        )
+    else:
+        value_example = '{"value": "A", "display_name": "Active", "description": "Currently active record"}'
+        table_example = '"display_name": "Human Name",\n      "description": "What this table stores"'
+        col_example = (
+            '"display_name": "Human Name",\n'
+            '      "description": "What this column means",\n'
+            '      "business_meaning": "Business context and how this column is used"'
+        )
+        glossary_example = '"term": "Revenue",\n      "definition": "Total income from sales"'
+    return f"""\
 You are a database analyst. You have been given a database schema and sample data \
 from every table. Your job is to produce comprehensive enrichment metadata that will \
 help business users understand this data through natural language.
 
+## Language Requirements
+
+{language_instructions}
+
+{context_section}\
 ## Database Schema
 
 {schema_description}
@@ -12,7 +203,7 @@ help business users understand this data through natural language.
 ## Exploration Data (sample rows and distinct values for each table)
 
 {exploration_data}
-
+{manual_section}{software_section}{additional}{value_guidance_section}{generate_section}{existing_note}\
 ## Your Task
 
 Produce a single JSON object with the following structure. Your response must be \
@@ -33,8 +224,7 @@ The "tables" array MUST include an entry for EVERY table ({total_tables} total).
   "tables": [
     {{
       "table_name": "schema.table_name",
-      "display_name": "Human Name",
-      "description": "What this table stores",
+      {table_example},
       "business_purpose": "Why this table exists in the business context",
       "tags": ["relevant", "tags"]
     }}
@@ -43,10 +233,8 @@ The "tables" array MUST include an entry for EVERY table ({total_tables} total).
     {{
       "table_name": "schema.table_name",
       "column_name": "col",
-      "display_name": "Human Name",
-      "description": "What this column means",
-      "business_meaning": "Business context and how this column is used",
-      "synonyms": ["alternative names", "Greek: ελληνικός όρος"]
+      {col_example},
+      "synonyms": ["alternative names"]
     }}
   ],
   "value_descriptions": [
@@ -54,38 +242,31 @@ The "tables" array MUST include an entry for EVERY table ({total_tables} total).
       "table_name": "schema.table_name",
       "column_name": "status_column",
       "values": [
-        {{"value": "A", "display_name": "Active", "description": "Currently active record"}}
+        {value_example}
       ]
     }}
   ],
   "glossary": [
     {{
-      "term": "Revenue",
-      "definition": "Total income from sales",
+      {glossary_example},
       "calculation": "SUM(order_total) FROM orders WHERE status = 'completed'",
       "related_tables": ["schema.orders"]
     }}
   ],
-  "example_queries": [
-    {{
-      "question": "What were total sales last month?",
-      "sql_query": "SELECT SUM(total) FROM schema.orders WHERE ...",
-      "description": "Calculates total revenue for the previous calendar month"
-    }}
-  ]
+  "example_queries": []
 }}
 
 Guidelines:
 - Use the sample data to infer business meaning, not just technical definitions.
-- For value_descriptions, include entries for any column where you saw coded/enum values in the distinct values data.
+- CRITICAL for value_descriptions: You MUST include a value_descriptions entry for EVERY column \
+that has "distinct_values" in the exploration data. These columns were selected because they have \
+fewer than {options.value_threshold} distinct values. For EACH such column, describe EVERY distinct \
+value — what it means in business context, what it represents, translate codes/abbreviations into \
+human-readable names. Even if the values seem self-explanatory (like city names or department names), \
+provide a display_name and brief description. This is critical for business users who need to \
+understand what each value represents. Do NOT skip any column that has distinct_values data.
 - For glossary, define key business metrics and concepts you can infer from the data.
-- For example_queries, write 5-10 practical business questions with working SQL.
+- Do NOT generate the "example_queries" array — example queries are managed by the user.
 - Use the exact table names as shown in the schema (schema.table_name format).
-- BILINGUAL SUPPORT: This application is used by Greek-speaking business users. \
-For EVERY column's "synonyms" array, include BOTH English alternative names AND \
-the Greek translation/equivalent. For example, a "revenue" column should have \
-synonyms like ["income", "sales amount", "έσοδα", "πωλήσεις"]. \
-Similarly for table display_name, column display_name, glossary terms, and \
-example_queries questions — include Greek where natural.
 - Respond with ONLY the JSON object. No other text.
 """

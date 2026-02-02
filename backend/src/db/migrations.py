@@ -292,4 +292,101 @@ MIGRATIONS: list[dict[str, str]] = [
                 ON example_queries(connection_id);
         """,
     },
+    {
+        "version": "015",
+        "description": "Add value_guidance to column_enrichment",
+        "sql": """
+            ALTER TABLE column_enrichment
+                ADD COLUMN IF NOT EXISTS value_guidance TEXT;
+        """,
+    },
+    {
+        "version": "016",
+        "description": "Create query_instructions table",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS query_instructions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                instruction TEXT NOT NULL,
+                sort_order INTEGER NOT NULL DEFAULT 0,
+                created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_query_instructions_conn
+                ON query_instructions(connection_id);
+        """,
+    },
+    {
+        "version": "017",
+        "description": "Create software_guidance table",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS software_guidance (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                software_name VARCHAR(200) NOT NULL,
+                guidance_text TEXT NOT NULL DEFAULT '',
+                doc_urls JSONB NOT NULL DEFAULT '[]'::jsonb,
+                confirmed BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(connection_id)
+            );
+        """,
+    },
+    {
+        "version": "018",
+        "description": "Create chat_conversations and chat_messages tables",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS chat_conversations (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                title VARCHAR(200) NOT NULL DEFAULT '',
+                chat_type VARCHAR(20) NOT NULL DEFAULT 'chat',
+                model_id VARCHAR(50) NOT NULL DEFAULT 'opus',
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_conv_connection
+                ON chat_conversations(connection_id);
+            CREATE INDEX IF NOT EXISTS idx_chat_conv_type
+                ON chat_conversations(chat_type);
+
+            CREATE TABLE IF NOT EXISTS chat_messages (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                conversation_id UUID NOT NULL REFERENCES chat_conversations(id) ON DELETE CASCADE,
+                role VARCHAR(20) NOT NULL,
+                content TEXT NOT NULL DEFAULT '',
+                response_data JSONB,
+                error TEXT,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_chat_msg_conversation
+                ON chat_messages(conversation_id);
+        """,
+    },
+    {
+        "version": "019",
+        "description": "Create poc_instances table",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS poc_instances (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                source_connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                poc_connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                customer_name VARCHAR(200) NOT NULL,
+                logo_path VARCHAR(500),
+                password_hash VARCHAR(200) NOT NULL,
+                model_id VARCHAR(50) NOT NULL DEFAULT 'opus',
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                deactivated_at TIMESTAMP WITH TIME ZONE
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_poc_source_conn
+                ON poc_instances(source_connection_id);
+            CREATE INDEX IF NOT EXISTS idx_poc_conn
+                ON poc_instances(poc_connection_id);
+        """,
+    },
 ]

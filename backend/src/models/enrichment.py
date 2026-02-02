@@ -76,6 +76,7 @@ class ColumnEnrichmentCreate(BaseModel):
     aggregation_functions: list[str] = ["COUNT", "SUM", "AVG"]
     format_pattern: Optional[str] = None
     pii_classification: Optional[str] = None
+    value_guidance: Optional[str] = None
 
 
 class ColumnEnrichment(ColumnEnrichmentCreate):
@@ -265,6 +266,43 @@ class ExampleQueryUpdate(BaseModel):
     question: Optional[str] = Field(None, min_length=1)
     sql_query: Optional[str] = Field(None, min_length=1)
     description: Optional[str] = None
+
+
+# ============================================================
+# Software Detection & Guidance
+# ============================================================
+
+
+class SoftwareDetectionResult(BaseModel):
+    """Result of detecting known software from table names."""
+    software_name: str
+    confidence: str  # "high", "medium", "low"
+    reasoning: str
+    doc_urls: list[str] = []
+    guidance_text: str = ""
+
+
+class SoftwareGuidance(BaseModel):
+    """Persisted software guidance for a connection."""
+    id: UUID = Field(default_factory=uuid4)
+    connection_id: UUID
+    software_name: str
+    guidance_text: str = ""
+    doc_urls: list[str] = []
+    confirmed: bool = False
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class SoftwareGuidanceCreate(BaseModel):
+    """Request body for confirming software guidance."""
+    software_name: str
+    guidance_text: str = ""
+    doc_urls: list[str] = []
+
+
+# ============================================================
+# Bulk Enrichment
+# ============================================================
 
 
 class BulkEnrichmentOptions(BaseModel):

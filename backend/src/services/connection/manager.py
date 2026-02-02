@@ -41,10 +41,9 @@ class ConnectionManager:
             connection_timeout=request.connection_timeout,
         )
 
-        # Store password in Secrets Manager
-        arn = await self._secrets.store_password(
-            str(config.id), request.password.get_secret_value()
-        )
+        # Store password in Secrets Manager (empty string if no password)
+        pwd = request.password.get_secret_value() if request.password else ""
+        arn = await self._secrets.store_password(str(config.id), pwd)
         config.credentials_secret_arn = arn
 
         # Persist connection config

@@ -24,6 +24,7 @@ from src.models.enrichment import (
     GlossaryTermUpdate,
     RelationshipEnrichment,
     RelationshipEnrichmentCreate,
+    SoftwareGuidance,
     TableEnrichment,
     TableEnrichmentCreate,
 )
@@ -181,8 +182,9 @@ class EnrichmentRepository:
             INSERT INTO column_enrichment
                 (id, column_id, display_name, description, business_meaning,
                  synonyms, is_filterable, is_aggregatable, is_groupable,
-                 aggregation_functions, format_pattern, pii_classification, enriched_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                 aggregation_functions, format_pattern, pii_classification,
+                 value_guidance, enriched_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (column_id) DO UPDATE SET
                 display_name = EXCLUDED.display_name,
                 description = EXCLUDED.description,
@@ -194,6 +196,7 @@ class EnrichmentRepository:
                 aggregation_functions = EXCLUDED.aggregation_functions,
                 format_pattern = EXCLUDED.format_pattern,
                 pii_classification = EXCLUDED.pii_classification,
+                value_guidance = EXCLUDED.value_guidance,
                 enriched_at = EXCLUDED.enriched_at
             """,
             (
@@ -205,6 +208,7 @@ class EnrichmentRepository:
                 enrichment.is_groupable,
                 json.dumps(enrichment.aggregation_functions),
                 enrichment.format_pattern, enrichment.pii_classification,
+                enrichment.value_guidance,
                 enrichment.enriched_at,
             ),
         )
@@ -491,6 +495,80 @@ class EnrichmentRepository:
         )
 
     # ================================================================
+    # Software Guidance
+    # ================================================================
+
+    async def save_software_guidance(
+        self,
+        connection_id: UUID,
+        software_name: str,
+        guidance_text: str = "",
+        doc_urls: list[str] | None = None,
+        confirmed: bool = False,
+    ) -> SoftwareGuidance:
+        guidance = SoftwareGuidance(
+            connection_id=connection_id,
+            software_name=software_name,
+            guidance_text=guidance_text,
+            doc_urls=doc_urls or [],
+            confirmed=confirmed,
+        )
+        await self.conn.execute(
+            """
+            INSERT INTO software_guidance
+                (id, connection_id, software_name, guidance_text, doc_urls, confirmed, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+            ON CONFLICT (connection_id) DO UPDATE SET
+                software_name = EXCLUDED.software_name,
+                guidance_text = EXCLUDED.guidance_text,
+                doc_urls = EXCLUDED.doc_urls,
+                confirmed = EXCLUDED.confirmed
+            """,
+            (
+                str(guidance.id), str(connection_id),
+                software_name, guidance_text,
+                json.dumps(doc_urls or []),
+                confirmed, guidance.created_at,
+            ),
+        )
+        return guidance
+
+    async def get_software_guidance(self, connection_id: UUID) -> SoftwareGuidance | None:
+        cursor = await self.conn.execute(
+            "SELECT * FROM software_guidance WHERE connection_id = %s",
+            (str(connection_id),),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            return None
+        doc_urls = row.get("doc_urls") or []
+        if isinstance(doc_urls, str):
+            doc_urls = json.loads(doc_urls)
+        return SoftwareGuidance(
+            id=UUID(str(row["id"])),
+            connection_id=UUID(str(row["connection_id"])),
+            software_name=row["software_name"],
+            guidance_text=row.get("guidance_text", ""),
+            doc_urls=doc_urls,
+            confirmed=row.get("confirmed", False),
+            created_at=row.get("created_at", datetime.utcnow()),
+        )
+
+    async def confirm_software_guidance(self, connection_id: UUID) -> bool:
+        cursor = await self.conn.execute(
+            "UPDATE software_guidance SET confirmed = TRUE WHERE connection_id = %s",
+            (str(connection_id),),
+        )
+        return cursor.rowcount > 0
+
+    async def delete_software_guidance(self, connection_id: UUID) -> bool:
+        cursor = await self.conn.execute(
+            "DELETE FROM software_guidance WHERE connection_id = %s",
+            (str(connection_id),),
+        )
+        return cursor.rowcount > 0
+
+    # ================================================================
     # Score Queries
     # ================================================================
 
@@ -611,6 +689,7 @@ class EnrichmentRepository:
             aggregation_functions=self._parse_json_field(row.get("aggregation_functions")),
             format_pattern=row.get("format_pattern"),
             pii_classification=row.get("pii_classification"),
+            value_guidance=row.get("value_guidance"),
             enriched_at=row.get("enriched_at", datetime.utcnow()),
         )
 

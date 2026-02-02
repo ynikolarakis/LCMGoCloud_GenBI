@@ -84,13 +84,37 @@ class LLMContextGenerator:
         data = await self._load_all_data(connection_id)
         keywords_lower = [k.lower() for k in keywords]
 
-        scored: list[tuple[float, dict]] = []
+        # Score all tables by keyword relevance
+        table_scores: dict[str, float] = {}
+        table_by_name: dict[str, dict] = {}
         for table_data in data["tables"]:
+            name = table_data["info"].table_name
             score = self._relevance_score(table_data, keywords_lower)
+            table_scores[name] = score
+            table_by_name[name] = table_data
+
+        # Boost tables connected via relationships to high-scoring tables
+        for rel in data["relationships"]:
+            from_t = rel["from_table"]
+            to_t = rel["to_table"]
+            if from_t in table_scores and to_t in table_scores:
+                if table_scores[from_t] > 0 and table_scores[to_t] == 0:
+                    table_scores[to_t] = table_scores[from_t] * 0.5
+                elif table_scores[to_t] > 0 and table_scores[from_t] == 0:
+                    table_scores[from_t] = table_scores[to_t] * 0.5
+
+        scored: list[tuple[float, dict]] = []
+        for name, score in table_scores.items():
             if score > 0:
-                scored.append((score, table_data))
+                scored.append((score, table_by_name[name]))
 
         scored.sort(key=lambda x: x[0], reverse=True)
+
+        # Fallback: if keyword matching found few tables, include ALL tables
+        # This handles cases where the question is in a different language
+        # than the schema (e.g., Greek question, English table/column names)
+        if len(scored) < 2:
+            scored = [(1.0, td) for td in data["tables"]]
 
         # Build context incrementally, stopping when token budget is reached
         selected_names: set[str] = set()
@@ -317,11 +341,11 @@ class LLMContextGenerator:
         if values:
             val_strs = []
             for v in values:
-                s = v.value
                 if v.display_name and v.display_name != v.value:
-                    s += f" ({v.display_name})"
-                val_strs.append(s)
-            col_sig += f". Values: {', '.join(val_strs)}"
+                    val_strs.append(f'"{v.value}" = {v.display_name}')
+                else:
+                    val_strs.append(f'"{v.value}"')
+            col_sig += f". Values (use the quoted value in SQL filters): {', '.join(val_strs)}"
 
         return col_sig
 
@@ -351,19 +375,47 @@ class LLMContextGenerator:
                     score += 5.0
                 if enrichment.display_name and kw in enrichment.display_name.lower():
                     score += 3.0
+                # Tags match
+                for tag in enrichment.tags:
+                    if kw in tag.lower():
+                        score += 3.0
+                # Typical queries match
+                for tq in enrichment.typical_queries:
+                    if kw in tq.lower():
+                        score += 2.0
 
             # Column name match
             for col in info.columns:
                 if kw in col.column_name.lower():
                     score += 2.0
 
-            # Column enrichment match (synonyms, description)
+            # Column enrichment match (synonyms, description, business meaning)
             for ce in col_enrichments.values():
                 if ce.description and kw in ce.description.lower():
                     score += 1.0
+                if ce.business_meaning and kw in ce.business_meaning.lower():
+                    score += 2.0
+                if ce.display_name and kw in ce.display_name.lower():
+                    score += 2.0
                 for syn in ce.synonyms:
                     if kw in syn.lower():
                         score += 2.0
+                if ce.value_guidance and kw in ce.value_guidance.lower():
+                    score += 1.5
+
+            # Value description match (display names, descriptions)
+            col_values = table_data.get("col_values", {})
+            for vals in col_values.values():
+                for v in vals:
+                    if v.display_name and kw in v.display_name.lower():
+                        score += 1.5
+                        break  # one match per column is enough
+                    if v.description and kw in v.description.lower():
+                        score += 1.5
+                        break
+                    if kw in v.value.lower():
+                        score += 1.5
+                        break
 
         return score
 

@@ -156,11 +156,12 @@ resource "aws_iam_role_policy" "bedrock" {
     Version = "2012-10-17"
     Statement = [{
       Effect   = "Allow"
-      Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
+      Action   = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream", "bedrock:Converse", "bedrock:ConverseStream"]
       Resource = [
-        "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.bedrock_model_id}",
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-opus-4-5-20251101-v1:0",
-        "arn:aws:bedrock:${var.aws_region}:${data.aws_caller_identity.current.account_id}:inference-profile/eu.anthropic.claude-opus-4-5-20251101-v1:0"
+        # Foundation models (wildcard region — eu.* profiles route to various EU regions)
+        "arn:aws:bedrock:*::foundation-model/*",
+        # Inference profiles (wildcard region — must match the calling account)
+        "arn:aws:bedrock:*:${data.aws_caller_identity.current.account_id}:inference-profile/*"
       ]
     }]
   })

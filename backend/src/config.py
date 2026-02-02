@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     secrets_manager_prefix: str = "genbi/connections"
 
     # LLM (Bedrock)
-    bedrock_model_id: str = "anthropic.claude-sonnet-4-5-20250929-v1:0"
+    bedrock_model_id: str = "eu.anthropic.claude-opus-4-5-20251101-v1:0"
     bedrock_max_tokens: int = 4096
 
     # Auth (Cognito)
@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     auth_enabled: bool = False
 
     # Query execution limits
-    query_timeout_seconds: int = 30
+    query_timeout_seconds: int = 60
     query_max_rows: int = 10000
 
     # Rate limiting
@@ -56,10 +56,17 @@ class Settings(BaseSettings):
     deep_enrich_max_iterations: int = 50
     deep_enrich_query_timeout: int = 10
     deep_enrich_max_rows: int = 100
+    deep_enrich_value_threshold: int = 150
+    deep_enrich_manual_max_size_mb: int = 10
 
     # Connection pool
     metadata_db_pool_min: int = 1
     metadata_db_pool_max: int = 5
+
+    # POC sharing
+    poc_jwt_secret: str = "genbi-poc-secret-change-me"
+    poc_jwt_expire_hours: int = 720  # 30 days
+    poc_logo_dir: str = "/var/www/genbi/poc-logos"
 
     model_config = {"env_prefix": "GENBI_", "env_file": ".env", "extra": "ignore"}
 

@@ -1,5 +1,15 @@
 /** Dashboard state — pinned charts with backend persistence. */
 
+function uuid(): string {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  if (typeof crypto !== "undefined" && typeof (crypto as any).randomUUID === "function")
+    return (crypto as any).randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
 import { create } from "zustand";
 import type { ChartType, QueryResponse, Dashboard, DashboardCard } from "@/types/api";
 import {
@@ -55,6 +65,10 @@ function cardFromBackend(card: DashboardCard): LocalDashboardCard {
       row_count: card.row_count,
       execution_time_ms: card.execution_time_ms,
       follow_up_questions: [],
+      column_labels: {},
+      input_tokens: 0,
+      output_tokens: 0,
+      model_used: '',
       created_at: card.pinned_at,
     },
     pinnedAt: new Date(card.pinned_at).getTime(),
@@ -91,7 +105,7 @@ export const useDashboardStore = create<DashboardState>((set, get) => ({
 
   pinChart: (title, chartType, response) => {
     const { dashboardId } = get();
-    const localId = crypto.randomUUID();
+    const localId = uuid();
 
     // Add locally immediately
     set((s) => ({

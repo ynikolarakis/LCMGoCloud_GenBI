@@ -2,7 +2,36 @@
 
 from __future__ import annotations
 
+import re
 from uuid import UUID
+
+
+# Column name patterns that indicate non-categorical data (unique/free-text).
+_NON_CATEGORICAL_PATTERNS = re.compile(
+    r"("
+    # Exact matches — identifiers, secrets, hashes
+    r"^(id|uuid|guid|hash|token|password|pw|salt|secret|fingerprint|"
+    r"checksum|md5|sha\d*|nonce|api_key|access_key|tn)$|"
+    # Suffix patterns — foreign keys, identifiers, numbers
+    r"_id$|_uuid$|_guid$|_hash$|_token$|_key$|_secret$|_password$|"
+    r"_fingerprint$|_checksum$|_nonce$|_md5$|_number$|"
+    # Free-text / long content columns
+    r"^(subject|title|body|text|message|description|comment|comments|"
+    r"note|notes|content|log|data|xml|json|html|url|path|filename|"
+    r"email|e_?mail|login|username|user_name|first_name|last_name|"
+    r"full_name|display_name|phone|fax|mobile|address|street|city|zip|"
+    r"postal|ip_address|user_agent|referrer|host|sender|sent_to|"
+    r"send_to|remote_ip|ip)$"
+    r")",
+    re.IGNORECASE,
+)
+
+
+def _is_likely_categorical(column_name: str) -> bool:
+    """Return True if a varchar/text column likely contains categorical values
+    that benefit from value descriptions (e.g. status, type, priority).
+    Return False for columns that are identifiers, free text, or unique values."""
+    return not _NON_CATEGORICAL_PATTERNS.search(column_name)
 
 from src.db.session import get_db
 from src.models.enrichment import (
@@ -230,6 +259,8 @@ class EnrichmentScoreCalculator:
 
                     # Check categorical columns for value descriptions
                     if col.data_type.lower() in ("varchar", "text", "char", "nvarchar", "enum"):
+                        if not _is_likely_categorical(col.column_name):
+                            continue
                         value_descs = await enrichment_repo.get_value_descriptions(col.id)
                         if not value_descs:
                             recommendations.append(EnrichmentRecommendation(

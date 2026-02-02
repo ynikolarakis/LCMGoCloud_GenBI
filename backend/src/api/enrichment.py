@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from uuid import UUID
 
+import json
+import logging
+
 from fastapi import APIRouter, HTTPException, status
+from fastapi.responses import StreamingResponse
 
 from src.db.session import get_db
 from src.models.enrichment import (
@@ -26,6 +30,9 @@ from src.models.enrichment import (
     GlossaryTermCreate,
     GlossaryTermUpdate,
     RelationshipEnrichmentCreate,
+    SoftwareDetectionResult,
+    SoftwareGuidance,
+    SoftwareGuidanceCreate,
     TableEnrichment,
     TableEnrichmentCreate,
     TableEnrichmentSuggestion,
@@ -35,7 +42,7 @@ from src.models.enrichment import (
 from src.repositories.enrichment_repository import EnrichmentRepository
 from src.repositories.discovery_repository import DiscoveryRepository
 from src.services.enrichment.ai_enrichment import AIEnrichmentService
-from src.services.enrichment.score_calculator import EnrichmentScoreCalculator
+from src.services.enrichment.score_calculator import EnrichmentScoreCalculator, _is_likely_categorical
 
 router = APIRouter(tags=["enrichment"])
 
@@ -244,6 +251,63 @@ async def save_value_descriptions(column_id: UUID, data: ColumnValuesUpdate):
     return {"saved": count}
 
 
+@router.get(
+    "/api/v1/columns/{column_id}/values/distinct",
+    response_model=list[str],
+    summary="Get distinct values for a column from the user's database",
+)
+async def get_distinct_values(column_id: UUID):
+    """Query the user's actual database for distinct values of a column."""
+    import logging
+
+    from src.connectors.base import ConnectorFactory
+    from src.repositories.connection_repository import ConnectionRepository
+    from src.services.connection.secrets import SecretsManagerClient
+
+    logger = logging.getLogger(__name__)
+
+    async with get_db() as conn:
+        cursor = await conn.execute(
+            """
+            SELECT dc.column_name, dt.table_name, dt.schema_name, dt.connection_id
+            FROM discovered_columns dc
+            JOIN discovered_tables dt ON dc.table_id = dt.id
+            WHERE dc.id = %s
+            """,
+            (str(column_id),),
+        )
+        row = await cursor.fetchone()
+        if row is None:
+            raise HTTPException(status_code=404, detail="Column not found")
+
+    connection_id = str(row["connection_id"])
+    schema_name = row["schema_name"] or "public"
+    table_name = row["table_name"]
+    column_name = row["column_name"]
+
+    try:
+        async with get_db() as meta_conn:
+            connection_repo = ConnectionRepository(meta_conn)
+            config = await connection_repo.get_by_id(connection_id)
+            if config is None:
+                raise HTTPException(status_code=404, detail="Connection not found")
+
+        secrets = SecretsManagerClient()
+        password = await secrets.get_password(connection_id)
+        connector = ConnectorFactory.create(config, password)
+
+        full_table = f'"{schema_name}"."{table_name}"'
+        quoted_col = f'"{column_name}"'
+        query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
+        results = await connector.execute_query(query)
+        return [str(r.get("val", r[list(r.keys())[0]])) for r in results if r]
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.warning("Failed to query distinct values for %s.%s: %s", table_name, column_name, exc)
+        raise HTTPException(status_code=400, detail=f"Could not fetch distinct values: {exc}")
+
+
 @router.post(
     "/api/v1/columns/{column_id}/values/ai-suggest",
     response_model=list[ValueDescriptionSuggestion],
@@ -273,8 +337,10 @@ async def suggest_value_descriptions(column_id: UUID, language: str = "en"):
             raise HTTPException(status_code=404, detail="Column not found")
 
     # 2. Query distinct values from user's database directly
-    from src.connectors.factory import ConnectorFactory
-    from src.services.secrets import SecretsManagerClient
+    from src.connectors.base import ConnectorFactory
+    from src.models.connection import ConnectionConfig
+    from src.repositories.connection_repository import ConnectionRepository
+    from src.services.connection.secrets import SecretsManagerClient
 
     connection_id = str(row["connection_id"])
     schema_name = row["schema_name"] or "public"
@@ -282,18 +348,23 @@ async def suggest_value_descriptions(column_id: UUID, language: str = "en"):
     column_name = row["column_name"]
 
     try:
+        async with get_db() as meta_conn:
+            connection_repo = ConnectionRepository(meta_conn)
+            config = await connection_repo.get_by_id(connection_id)
+            if config is None:
+                raise HTTPException(status_code=404, detail="Connection not found")
+
         secrets = SecretsManagerClient()
-        config = await secrets.get_connection_config(connection_id)
-        connector = ConnectorFactory.create(config)
-        await connector.connect()
-        try:
-            full_table = f'"{schema_name}"."{table_name}"'
-            quoted_col = f'"{column_name}"'
-            query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
-            result = await connector.execute_query(query, timeout=10)
-            distinct_values = [str(r[0]) for r in result.rows if r[0] is not None]
-        finally:
-            await connector.disconnect()
+        password = await secrets.get_password(connection_id)
+        connector = ConnectorFactory.create(config, password)
+
+        full_table = f'"{schema_name}"."{table_name}"'
+        quoted_col = f'"{column_name}"'
+        query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
+        results = await connector.execute_query(query)
+        distinct_values = [str(r.get("val") or r[list(r.keys())[0]]) for r in results if r]
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.warning("Failed to query distinct values for %s.%s: %s", table_name, column_name, exc)
         raise HTTPException(status_code=400, detail=f"Could not fetch distinct values: {exc}")
@@ -301,10 +372,19 @@ async def suggest_value_descriptions(column_id: UUID, language: str = "en"):
     if not distinct_values:
         raise HTTPException(status_code=400, detail="No distinct values found for this column.")
 
+    # Check for software guidance
+    software_guidance = ""
+    async with get_db() as conn:
+        repo = EnrichmentRepository(conn)
+        guidance = await repo.get_software_guidance(UUID(connection_id))
+        if guidance and guidance.confirmed:
+            software_guidance = guidance.guidance_text
+
     ai_service = AIEnrichmentService()
     return await ai_service.suggest_value_descriptions(
         column_name, table_name,
         row.get("description") or "", distinct_values, language,
+        software_guidance=software_guidance,
     )
 
 
@@ -479,6 +559,81 @@ async def get_enrichment_recommendations(connection_id: UUID):
 
 
 # ================================================================
+# Software Detection & Guidance
+# ================================================================
+
+@router.post(
+    "/api/v1/connections/{connection_id}/software-detect",
+    response_model=SoftwareDetectionResult | None,
+    summary="Detect known software from table names",
+)
+async def detect_software(connection_id: UUID):
+    """Analyze table names to detect if the database belongs to a known software product."""
+    from src.services.enrichment.software_detector import SoftwareDetector
+
+    async with get_db() as conn:
+        discovery_repo = DiscoveryRepository(conn)
+        tables = await discovery_repo.get_tables(connection_id)
+
+    if not tables:
+        raise HTTPException(status_code=400, detail="No tables discovered yet. Run discovery first.")
+
+    table_names = [f"{t.schema_name}.{t.table_name}" for t in tables]
+
+    detector = SoftwareDetector()
+    result = await detector.detect_software(table_names)
+
+    if result is not None:
+        # Auto-generate guidance text from LLM knowledge
+        guidance_text = await detector.generate_guidance(result.software_name)
+        result.guidance_text = guidance_text
+
+    return result
+
+
+@router.post(
+    "/api/v1/connections/{connection_id}/software-guidance",
+    response_model=SoftwareGuidance,
+    status_code=status.HTTP_201_CREATED,
+    summary="Save confirmed software guidance",
+)
+async def save_software_guidance(connection_id: UUID, data: SoftwareGuidanceCreate):
+    async with get_db() as conn:
+        repo = EnrichmentRepository(conn)
+        return await repo.save_software_guidance(
+            connection_id,
+            software_name=data.software_name,
+            guidance_text=data.guidance_text,
+            doc_urls=data.doc_urls,
+            confirmed=True,
+        )
+
+
+@router.get(
+    "/api/v1/connections/{connection_id}/software-guidance",
+    response_model=SoftwareGuidance | None,
+    summary="Get saved software guidance",
+)
+async def get_software_guidance(connection_id: UUID):
+    async with get_db() as conn:
+        repo = EnrichmentRepository(conn)
+        return await repo.get_software_guidance(connection_id)
+
+
+@router.delete(
+    "/api/v1/connections/{connection_id}/software-guidance",
+    status_code=status.HTTP_204_NO_CONTENT,
+    summary="Remove software guidance",
+)
+async def delete_software_guidance(connection_id: UUID):
+    async with get_db() as conn:
+        repo = EnrichmentRepository(conn)
+        deleted = await repo.delete_software_guidance(connection_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="No guidance found")
+
+
+# ================================================================
 # Bulk Operations
 # ================================================================
 
@@ -490,3 +645,159 @@ async def get_enrichment_recommendations(connection_id: UUID):
 async def bulk_ai_enrichment(connection_id: UUID, options: BulkEnrichmentOptions):
     ai_service = AIEnrichmentService()
     return await ai_service.bulk_enrich_schema(connection_id, options)
+
+
+@router.post(
+    "/api/v1/connections/{connection_id}/values/bulk-ai-generate",
+    summary="Bulk AI generate value descriptions for all categorical columns",
+)
+async def bulk_ai_generate_value_descriptions(
+    connection_id: UUID, language: str = "el"
+):
+    """Stream progress as SSE while generating value descriptions for all
+    categorical columns that are missing them."""
+
+    logger = logging.getLogger(__name__)
+
+    async def _generate():
+        from src.connectors.base import ConnectorFactory
+        from src.repositories.connection_repository import ConnectionRepository
+        from src.services.connection.secrets import SecretsManagerClient
+
+        # 1. Get connection config + password
+        async with get_db() as meta_conn:
+            connection_repo = ConnectionRepository(meta_conn)
+            config = await connection_repo.get_by_id(str(connection_id))
+            if config is None:
+                yield f"event: error\ndata: {json.dumps({'error': 'Connection not found'})}\n\n"
+                return
+
+        secrets = SecretsManagerClient()
+        password = await secrets.get_password(str(connection_id))
+        connector = ConnectorFactory.create(config, password)
+
+        # Determine quoting style based on DB type
+        q = "`" if config.db_type.value in ("mysql", "mariadb") else '"'
+
+        # 2. Find all columns needing value descriptions
+        columns_to_process: list[dict] = []
+        async with get_db() as conn:
+            enrichment_repo = EnrichmentRepository(conn)
+            discovery_repo = DiscoveryRepository(conn)
+            tables = await discovery_repo.get_tables(connection_id)
+
+            for table in tables:
+                columns = await discovery_repo._get_columns(table.id)
+                for col in columns:
+                    if col.data_type.lower() in (
+                        "varchar", "text", "char", "nvarchar", "enum",
+                    ) and _is_likely_categorical(col.column_name):
+                        existing = await enrichment_repo.get_value_descriptions(col.id)
+                        if not existing:
+                            # Get column description if available
+                            col_enrichment = await enrichment_repo.get_column_enrichment(col.id)
+                            columns_to_process.append({
+                                "column_id": col.id,
+                                "column_name": col.column_name,
+                                "table_name": table.table_name,
+                                "schema_name": table.schema_name or "public",
+                                "description": col_enrichment.description if col_enrichment else "",
+                            })
+
+        total = len(columns_to_process)
+        if total == 0:
+            yield f"event: complete\ndata: {json.dumps({'columns_processed': 0, 'columns_failed': 0})}\n\n"
+            return
+
+        yield f"event: progress\ndata: {json.dumps({'completed': 0, 'total': total, 'current_column': ''})}\n\n"
+
+        # Load software guidance if available
+        sw_guidance = ""
+        async with get_db() as conn:
+            repo = EnrichmentRepository(conn)
+            guidance = await repo.get_software_guidance(connection_id)
+            if guidance and guidance.confirmed:
+                sw_guidance = guidance.guidance_text
+
+        ai_service = AIEnrichmentService()
+        completed = 0
+        failed = 0
+
+        for col_info in columns_to_process:
+            col_label = f"{col_info['table_name']}.{col_info['column_name']}"
+            yield f"event: progress\ndata: {json.dumps({'completed': completed, 'total': total, 'current_column': col_label})}\n\n"
+
+            try:
+                # Query distinct values from user's DB
+                schema_name = col_info["schema_name"]
+                table_name = col_info["table_name"]
+                column_name = col_info["column_name"]
+                full_table = f'{q}{schema_name}{q}.{q}{table_name}{q}'
+                quoted_col = f'{q}{column_name}{q}'
+                query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
+                results = await connector.execute_query(query)
+                distinct_values = [
+                    str(r.get("val") or r[list(r.keys())[0]])
+                    for r in results if r
+                ]
+
+                if not distinct_values or len(distinct_values) > 50:
+                    # Mark as handled so recommendations don't keep suggesting
+                    from src.models.enrichment import ColumnValueDescriptionCreate
+                    skip_marker = [ColumnValueDescriptionCreate(
+                        value="__SKIPPED__",
+                        display_name="",
+                        description="Column skipped: no data or too many distinct values",
+                    )]
+                    async with get_db() as conn2:
+                        repo2 = EnrichmentRepository(conn2)
+                        await repo2.save_value_descriptions(col_info["column_id"], skip_marker)
+                    completed += 1
+                    continue
+
+                # Get AI suggestions — run with keepalive pings
+                import asyncio
+                ai_task = asyncio.create_task(
+                    ai_service.suggest_value_descriptions(
+                        column_name, table_name,
+                        col_info["description"] or "", distinct_values, language,
+                        software_guidance=sw_guidance,
+                    )
+                )
+                while not ai_task.done():
+                    await asyncio.sleep(3)
+                    if not ai_task.done():
+                        yield f"event: progress\ndata: {json.dumps({'completed': completed, 'total': total, 'current_column': col_label})}\n\n"
+                suggestions = ai_task.result()
+
+                # Save them
+                from src.models.enrichment import ColumnValueDescriptionCreate
+                values_to_save = [
+                    ColumnValueDescriptionCreate(
+                        value=s.value,
+                        display_name=s.display_name or "",
+                        description=s.description or "",
+                    )
+                    for s in suggestions
+                ]
+                async with get_db() as conn:
+                    repo = EnrichmentRepository(conn)
+                    await repo.save_value_descriptions(col_info["column_id"], values_to_save)
+
+                completed += 1
+            except Exception as exc:
+                logger.warning("Bulk value gen failed for %s: %s", col_label, exc)
+                failed += 1
+                completed += 1
+
+        yield f"event: progress\ndata: {json.dumps({'completed': completed, 'total': total, 'current_column': ''})}\n\n"
+        yield f"event: complete\ndata: {json.dumps({'columns_processed': completed - failed, 'columns_failed': failed})}\n\n"
+
+    return StreamingResponse(
+        _generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

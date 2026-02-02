@@ -59,6 +59,7 @@ export interface QueryRequest {
   question: string;
   conversation_id?: string;
   history?: ConversationTurn[];
+  model_id?: string;
 }
 
 export interface ConversationTurn {
@@ -80,6 +81,10 @@ export interface QueryResponse {
   row_count: number;
   execution_time_ms: number;
   follow_up_questions: string[];
+  column_labels: Record<string, string>;
+  input_tokens: number;
+  output_tokens: number;
+  model_used: string;
   created_at: string;
 }
 
@@ -144,6 +149,20 @@ export interface Relationship {
   description: string | null;
 }
 
+export interface RelationshipCreate {
+  from_table_id: string;
+  from_column_id: string;
+  to_table_id: string;
+  to_column_id: string;
+  relationship_type: string;
+  description?: string;
+}
+
+export interface RelationshipUpdate {
+  relationship_type?: string;
+  description?: string;
+}
+
 export interface SchemaResponse {
   connection_id: string;
   tables: TableInfo[];
@@ -198,6 +217,7 @@ export interface ColumnEnrichment {
   synonyms: string[];
   is_filterable: boolean;
   is_aggregatable: boolean;
+  value_guidance: string | null;
 }
 
 export interface GlossaryTerm {
@@ -254,6 +274,26 @@ export interface ExampleQueryUpdate {
 // Deep Enrichment Models
 // ============================================================
 
+export interface DeepEnrichOptions {
+  primary_language: string;
+  secondary_language: string | null;
+  business_domain: string | null;
+  company_name: string | null;
+  additional_instructions: string | null;
+  value_threshold: number;
+  manual_id: string | null;
+  generate_tables: boolean;
+  generate_columns: boolean;
+  generate_values: boolean;
+  generate_glossary: boolean;
+  generate_examples: boolean;
+  generate_relationships: boolean;
+  overwrite_existing: boolean;
+  scope_table_ids: string[] | null;
+  max_iterations: number;
+  query_timeout: number;
+}
+
 export interface DeepEnrichJob {
   job_id: string;
   status: "running" | "complete" | "error";
@@ -274,6 +314,12 @@ export interface DeepEnrichCompleteEvent {
   glossary_terms: number;
   example_queries: number;
   duration_seconds: number;
+}
+
+export interface ManualUploadResponse {
+  manual_id: string;
+  filename: string;
+  size_bytes: number;
 }
 
 // ============================================================
@@ -346,6 +392,19 @@ export interface DashboardCard {
 
 export interface DashboardCreate {
   name: string;
+}
+
+// ============================================================
+// Query Instructions
+// ============================================================
+
+export interface QueryInstruction {
+  id: string;
+  connection_id: string;
+  instruction: string;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface Dashboard {

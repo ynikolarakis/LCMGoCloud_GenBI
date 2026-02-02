@@ -27,6 +27,16 @@ const LoginPage = lazy(() =>
 const SchemaPage = lazy(() =>
   import("@/pages/SchemaPage").then((m) => ({ default: m.SchemaPage })),
 );
+const AdvancedChatPage = lazy(() =>
+  import("@/pages/AdvancedChatPage").then((m) => ({
+    default: m.AdvancedChatPage,
+  })),
+);
+const PocChatPage = lazy(() =>
+  import("@/pages/PocChatPage").then((m) => ({
+    default: m.PocChatPage,
+  })),
+);
 
 const queryClient = new QueryClient();
 
@@ -46,7 +56,10 @@ function NavBar() {
 
   return (
     <header className="flex items-center justify-between border-b bg-white px-6 py-3 shadow-sm">
-      <h1 className="text-lg font-semibold text-gray-900">GenBI Platform</h1>
+      <div className="flex items-center gap-2">
+        <img src="/logo_en.png" alt="LCM Go Cloud" className="h-10 w-10 object-contain" />
+        <h1 className="text-lg font-semibold text-gray-900">GenBI Platform</h1>
+      </div>
       <div className="flex items-center gap-4">
         <nav className="flex gap-2">
           <NavLink to="/connections" className={linkClass}>
@@ -54,6 +67,9 @@ function NavBar() {
           </NavLink>
           <NavLink to="/chat" className={linkClass}>
             Chat
+          </NavLink>
+          <NavLink to="/advanced-chat" className={linkClass}>
+            Advanced Chat
           </NavLink>
           <NavLink to="/dashboard" className={linkClass}>
             Dashboard
@@ -75,36 +91,21 @@ function NavBar() {
   );
 }
 
-function AuthenticatedApp() {
+
+function PocApp() {
   return (
     <BrowserRouter>
-      <div className="flex min-h-screen flex-col bg-gray-50">
-        <NavBar />
-        <main className="flex-1">
-          <Suspense fallback={<PageLoader />}>
-            <Routes>
-              <Route path="/" element={<ConnectionsPage />} />
-              <Route path="/connections" element={<ConnectionsPage />} />
-              <Route path="/connections/new" element={<ConnectionFormPage />} />
-              <Route
-                path="/connections/:id/edit"
-                element={<ConnectionFormPage />}
-              />
-              <Route
-                path="/connections/:connectionId/schema"
-                element={<SchemaPage />}
-              />
-              <Route path="/chat" element={<ChatPage />} />
-              <Route path="/dashboard" element={<DashboardPage />} />
-            </Routes>
-          </Suspense>
-        </main>
-      </div>
+      <Suspense fallback={<PageLoader />}>
+        <Routes>
+          <Route path="/poc/:pocId" element={<PocChatPage />} />
+          <Route path="*" element={<AuthGate />} />
+        </Routes>
+      </Suspense>
     </BrowserRouter>
   );
 }
 
-function App() {
+function AuthGate() {
   const { isAuthenticated, isLoading, authRequired, initialize } =
     useAuthStore();
 
@@ -120,15 +121,43 @@ function App() {
     );
   }
 
+  if (authRequired && !isAuthenticated) {
+    return (
+      <Suspense fallback={<PageLoader />}>
+        <LoginPage />
+      </Suspense>
+    );
+  }
+
+  return <AuthenticatedRoutes />;
+}
+
+function AuthenticatedRoutes() {
+  return (
+    <div className="flex min-h-screen flex-col bg-gray-50">
+      <NavBar />
+      <main className="flex-1">
+        <Suspense fallback={<PageLoader />}>
+          <Routes>
+            <Route path="/" element={<ConnectionsPage />} />
+            <Route path="/connections" element={<ConnectionsPage />} />
+            <Route path="/connections/new" element={<ConnectionFormPage />} />
+            <Route path="/connections/:id/edit" element={<ConnectionFormPage />} />
+            <Route path="/connections/:connectionId/schema" element={<SchemaPage />} />
+            <Route path="/chat" element={<ChatPage />} />
+            <Route path="/advanced-chat" element={<AdvancedChatPage />} />
+            <Route path="/dashboard" element={<DashboardPage />} />
+          </Routes>
+        </Suspense>
+      </main>
+    </div>
+  );
+}
+
+function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      {authRequired && !isAuthenticated ? (
-        <Suspense fallback={<PageLoader />}>
-          <LoginPage />
-        </Suspense>
-      ) : (
-        <AuthenticatedApp />
-      )}
+      <PocApp />
     </QueryClientProvider>
   );
 }

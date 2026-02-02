@@ -32,7 +32,7 @@ class ConnectionCreate(BaseModel):
     port: int = Field(..., gt=0, le=65535)
     database: str = Field(..., min_length=1, max_length=255)
     username: str = Field(..., min_length=1, max_length=255)
-    password: SecretStr = Field(..., description="Database password (stored in Secrets Manager)")
+    password: Optional[SecretStr] = Field(default=None, description="Database password (stored in Secrets Manager, optional)")
     ssl_enabled: bool = Field(default=True, description="Enable SSL/TLS")
     connection_timeout: int = Field(default=30, ge=5, le=120, description="Timeout in seconds")
 

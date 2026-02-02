@@ -193,9 +193,17 @@ class AIEnrichmentService:
         column_description: str,
         distinct_values: list[str],
         language: str = "en",
+        software_guidance: str = "",
     ) -> list[ValueDescriptionSuggestion]:
         """Generate AI suggestions for categorical value descriptions."""
         values_list = "\n".join(f"- {v}" for v in distinct_values)
+
+        guidance_section = ""
+        if software_guidance:
+            guidance_section = (
+                f"\n\nKnown Software Context:\n{software_guidance}\n"
+                "Use this context to provide more accurate descriptions."
+            )
 
         prompt = VALUE_DESCRIPTIONS_PROMPT.format(
             column_name=column_name,
@@ -203,7 +211,7 @@ class AIEnrichmentService:
             column_description=column_description or "Not described",
             values_list=values_list,
             language=language,
-        )
+        ) + guidance_section
 
         response_text = await self._invoke_llm(prompt)
         data = self._parse_json_response(response_text)

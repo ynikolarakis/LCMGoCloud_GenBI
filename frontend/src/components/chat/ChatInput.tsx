@@ -4,9 +4,11 @@ interface ChatInputProps {
   onSend: (message: string) => void;
   disabled?: boolean;
   suggestions?: string[];
+  modelId: string;
+  onModelChange: (modelId: string) => void;
 }
 
-export function ChatInput({ onSend, disabled, suggestions }: ChatInputProps) {
+export function ChatInput({ onSend, disabled, suggestions, modelId, onModelChange }: ChatInputProps) {
   const [input, setInput] = useState("");
 
   const handleSubmit = (e: FormEvent) => {
@@ -43,6 +45,26 @@ export function ChatInput({ onSend, disabled, suggestions }: ChatInputProps) {
           className="flex-1 rounded-lg border border-gray-300 px-4 py-2 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
           disabled={disabled}
         />
+        <select
+          value={modelId}
+          onChange={(e) => onModelChange(e.target.value)}
+          className="rounded-lg border border-gray-300 px-2 py-2 text-sm text-gray-600 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500"
+        >
+          <optgroup label="Claude">
+            <option value="opus">Opus 4.5</option>
+            <option value="sonnet">Sonnet 4.5</option>
+            <option value="haiku">Haiku 4.5</option>
+          </optgroup>
+          <optgroup label="Meta">
+            <option value="llama">Llama 3.2 3B</option>
+          </optgroup>
+          <optgroup label="Mistral">
+            <option value="pixtral">Pixtral Large</option>
+          </optgroup>
+          <optgroup label="Amazon">
+            <option value="nova-pro">Nova Pro</option>
+          </optgroup>
+        </select>
         <button
           type="submit"
           disabled={disabled || !input.trim()}

@@ -79,6 +79,7 @@ async def get_schema(connection_id: UUID) -> SchemaResponse:
 
     relationships = [
         Relationship(
+            id=UUID(str(r["id"])),
             connection_id=connection_id,
             from_schema=r["from_schema"],
             from_table=r["from_table"],

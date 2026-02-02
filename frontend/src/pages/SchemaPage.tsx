@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import { useParams, Link } from "react-router-dom";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { generateInstructions } from "@/services/api";
 import {
   discoverSchema,
   fetchSchema,
@@ -12,12 +13,20 @@ import {
   saveColumnEnrichment,
   fetchDatabaseEnrichment,
   saveDatabaseEnrichment,
+  fetchDistinctValues,
   fetchValueDescriptions,
   saveValueDescriptions,
   suggestValueDescriptions,
+  bulkGenerateValueDescriptions,
+  detectSoftware,
+  saveSoftwareGuidance,
+  fetchSoftwareGuidance,
+  deleteSoftwareGuidance,
 } from "@/services/api";
+import type { BulkValueGenProgress, SoftwareDetectionResult } from "@/services/api";
 import { DeepEnrichButton } from "@/components/enrichment/DeepEnrichButton";
 import { ExampleQueriesPanel } from "@/components/enrichment/ExampleQueriesPanel";
+import { RelationshipsPanel } from "@/components/enrichment/RelationshipsPanel";
 import type {
   ColumnInfo,
   ColumnValueDescriptionCreate,
@@ -28,6 +37,29 @@ import type {
   EnrichmentRecommendation,
   DatabaseEnrichment,
 } from "@/types/api";
+
+// ============================================================
+// Bilingual indicator
+// ============================================================
+
+/** Detect if text contains bilingual " / " separator pattern. */
+function isBilingual(text: string | null | undefined): boolean {
+  if (!text) return false;
+  // Match "word(s) / word(s)" pattern — at least one slash with text on both sides
+  return /\S+\s+\/\s+\S+/.test(text);
+}
+
+function BilingualBadge({ text }: { text: string | null | undefined }) {
+  if (!isBilingual(text)) return null;
+  return (
+    <span className="ml-1.5 inline-flex items-center gap-0.5 rounded-full bg-indigo-50 px-1.5 py-0.5 text-[9px] font-semibold uppercase tracking-wider text-indigo-500" title="Bilingual description">
+      <svg className="h-2.5 w-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M10.5 21l5.25-11.25L21 21m-9-3h7.5M3 5.621a48.474 48.474 0 016-.371m0 0c1.12 0 2.233.038 3.334.114M9 5.25V3m3.334 2.364C11.176 10.658 7.69 15.08 3 17.502m9.334-12.138c.896.061 1.785.147 2.666.257m-4.589 8.495a18.023 18.023 0 01-3.827-5.802" />
+      </svg>
+      2 lang
+    </span>
+  );
+}
 
 // ============================================================
 // SVG Icons (shared)
@@ -140,11 +172,58 @@ export function SchemaPage() {
     enabled: Boolean(connectionId),
   });
 
+  const guidanceQ = useQuery({
+    queryKey: ["software-guidance", connectionId],
+    queryFn: () => fetchSoftwareGuidance(connectionId!),
+    enabled: Boolean(connectionId),
+  });
+
+  const [detectModalOpen, setDetectModalOpen] = useState(false);
+  const [detecting, setDetecting] = useState(false);
+  const [detectionResult, setDetectionResult] = useState<SoftwareDetectionResult | null>(null);
+
+  const handleDetectSoftware = async () => {
+    setDetecting(true);
+    setDetectModalOpen(true);
+    try {
+      const result = await detectSoftware(connectionId!);
+      setDetectionResult(result);
+    } catch {
+      setDetectionResult(null);
+    } finally {
+      setDetecting(false);
+    }
+  };
+
+  const handleConfirmGuidance = async () => {
+    if (!detectionResult) return;
+    await saveSoftwareGuidance(connectionId!, {
+      software_name: detectionResult.software_name,
+      guidance_text: detectionResult.guidance_text,
+      doc_urls: detectionResult.doc_urls,
+    });
+    queryClient.invalidateQueries({ queryKey: ["software-guidance", connectionId] });
+    setDetectModalOpen(false);
+    setDetectionResult(null);
+  };
+
+  const handleRemoveGuidance = async () => {
+    await deleteSoftwareGuidance(connectionId!);
+    queryClient.invalidateQueries({ queryKey: ["software-guidance", connectionId] });
+  };
+
   const discoverMut = useMutation({
     mutationFn: () => discoverSchema(connectionId!),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["schema", connectionId] });
       queryClient.invalidateQueries({ queryKey: ["enrichment-score", connectionId] });
+    },
+  });
+
+  const optimizeMut = useMutation({
+    mutationFn: () => generateInstructions(connectionId!),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["instructions", connectionId] });
     },
   });
 
@@ -171,7 +250,26 @@ export function SchemaPage() {
             Back
           </Link>
           {schemaQ.data && (
-            <DeepEnrichButton connectionId={connectionId} />
+            <DeepEnrichButton connectionId={connectionId} tables={schemaQ.data?.tables} hasExistingEnrichment={Boolean(scoreQ.data && scoreQ.data.overall_score > 0)} />
+          )}
+          {scoreQ.data && scoreQ.data.overall_score > 0 && (
+            <button
+              onClick={() => optimizeMut.mutate()}
+              disabled={optimizeMut.isPending}
+              className="inline-flex items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-4 py-2 text-sm font-semibold text-purple-700 shadow-sm transition-all hover:bg-purple-100 disabled:opacity-50"
+            >
+              {optimizeMut.isPending ? (
+                <svg className="h-4 w-4 animate-spin" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+              ) : (
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={1.5}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+                </svg>
+              )}
+              {optimizeMut.isPending ? "Optimizing..." : "Optimize for Chat"}
+            </button>
           )}
           <button
             onClick={() => discoverMut.mutate()}
@@ -200,12 +298,145 @@ export function SchemaPage() {
         </div>
       )}
 
+      {optimizeMut.isSuccess && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-purple-200 bg-purple-50 px-4 py-3 text-sm text-purple-800">
+          <svg className="h-4 w-4 flex-shrink-0 text-purple-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+          </svg>
+          Query instructions generated. Open the gear icon in Chat to review and edit them.
+        </div>
+      )}
+
+      {optimizeMut.isError && (
+        <div className="mb-4 flex items-center gap-2 rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-800">
+          <svg className="h-4 w-4 flex-shrink-0 text-red-500" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 11-18 0 9 9 0 0118 0zm-9 3.75h.008v.008H12v-.008z" />
+          </svg>
+          Failed to generate instructions. Please try again.
+        </div>
+      )}
+
+      {/* Software Guidance Banner */}
+      {guidanceQ.data && guidanceQ.data.confirmed && (
+        <div className="mb-4 flex items-center justify-between rounded-xl border border-teal-200/60 bg-teal-50 px-4 py-3">
+          <div className="flex items-center gap-2">
+            <svg className="h-4 w-4 text-teal-600" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+              <path strokeLinecap="round" strokeLinejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+            </svg>
+            <span className="text-sm font-semibold text-teal-800">
+              {guidanceQ.data.software_name} guidance active
+            </span>
+            <span className="text-xs text-teal-600">
+              AI enrichment uses {guidanceQ.data.software_name}-specific documentation
+            </span>
+          </div>
+          <button
+            onClick={handleRemoveGuidance}
+            className="text-xs font-medium text-teal-600 hover:text-teal-800 hover:underline"
+          >
+            Remove
+          </button>
+        </div>
+      )}
+
+      {/* Detect Software Button (when no guidance exists) */}
+      {schemaQ.data && !guidanceQ.data?.confirmed && (
+        <div className="mb-4 flex items-center gap-2">
+          <button
+            onClick={handleDetectSoftware}
+            disabled={detecting}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-teal-200 bg-teal-50 px-3 py-1.5 text-xs font-semibold text-teal-700 shadow-sm transition-all hover:bg-teal-100 disabled:opacity-50"
+          >
+            {detecting ? (
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
+              </svg>
+            )}
+            {detecting ? "Detecting..." : "Detect Known Software"}
+          </button>
+        </div>
+      )}
+
+      {/* Software Detection Modal */}
+      {detectModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/30">
+          <div className="mx-4 w-full max-w-lg rounded-xl border border-gray-200 bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-gray-900">Software Detection</h3>
+            {detecting ? (
+              <div className="mt-4 flex items-center gap-3 text-sm text-gray-500">
+                <svg className="h-5 w-5 animate-spin text-teal-500" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Analyzing table names...
+              </div>
+            ) : detectionResult ? (
+              <div className="mt-4 space-y-3">
+                <div className="rounded-lg border border-teal-200 bg-teal-50 p-3">
+                  <p className="text-sm font-semibold text-teal-800">
+                    Detected: {detectionResult.software_name}
+                  </p>
+                  <p className="mt-1 text-xs text-teal-600">
+                    Confidence: {detectionResult.confidence}
+                  </p>
+                  <p className="mt-1 text-xs text-teal-600">
+                    {detectionResult.reasoning}
+                  </p>
+                </div>
+                {detectionResult.guidance_text && (
+                  <div className="max-h-48 overflow-y-auto rounded-lg border border-gray-200 bg-gray-50 p-3">
+                    <p className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
+                      Generated Guidance
+                    </p>
+                    <p className="whitespace-pre-wrap text-xs text-gray-600">
+                      {detectionResult.guidance_text.slice(0, 1000)}
+                      {detectionResult.guidance_text.length > 1000 && "..."}
+                    </p>
+                  </div>
+                )}
+                <div className="flex items-center gap-2 pt-2">
+                  <button
+                    onClick={handleConfirmGuidance}
+                    className="rounded-lg bg-teal-600 px-4 py-2 text-sm font-semibold text-white shadow-sm hover:bg-teal-700"
+                  >
+                    Use as Guidance
+                  </button>
+                  <button
+                    onClick={() => { setDetectModalOpen(false); setDetectionResult(null); }}
+                    className="rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50"
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <div className="mt-4">
+                <p className="text-sm text-gray-500">
+                  No known software product detected from the table names.
+                </p>
+                <button
+                  onClick={() => setDetectModalOpen(false)}
+                  className="mt-3 rounded-lg border border-gray-200 bg-white px-4 py-2 text-sm font-medium text-gray-600 shadow-sm hover:bg-gray-50"
+                >
+                  Close
+                </button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Score Banner */}
       {scoreQ.data && <ScoreBanner score={scoreQ.data} />}
 
       {/* Recommendations */}
       {recsQ.data && recsQ.data.length > 0 && (
-        <RecommendationsList recommendations={recsQ.data} />
+        <RecommendationsList recommendations={recsQ.data} connectionId={connectionId} />
       )}
 
       {schemaQ.isLoading && (
@@ -238,7 +469,6 @@ export function SchemaPage() {
           <div className="col-span-4">
             <SchemaTree
               tables={schemaQ.data.tables}
-              relationships={schemaQ.data.relationships}
               selectedTable={selectedTable}
               selectedColumn={selectedColumn}
               onSelectTable={(table) => {
@@ -281,6 +511,15 @@ export function SchemaPage() {
         </div>
       )}
 
+      {/* Relationships */}
+      {schemaQ.data && (
+        <RelationshipsPanel
+          connectionId={connectionId}
+          relationships={schemaQ.data.relationships}
+          tables={schemaQ.data.tables}
+        />
+      )}
+
       {/* Example Queries */}
       {schemaQ.data && (
         <ExampleQueriesPanel connectionId={connectionId} />
@@ -303,14 +542,12 @@ interface FlatNode {
 
 function SchemaTree({
   tables,
-  relationships,
   selectedTable,
   selectedColumn,
   onSelectTable,
   onSelectColumn,
 }: {
   tables: TableInfo[];
-  relationships: { id: string; from_table: string; from_column: string; to_table: string; to_column: string; relationship_type: string }[];
   selectedTable: TableInfo | null;
   selectedColumn: ColumnInfo | null;
   onSelectTable: (t: TableInfo) => void;
@@ -631,29 +868,6 @@ function SchemaTree({
         })}
       </div>
 
-      {/* Relationships */}
-      {relationships.length > 0 && (
-        <div className="border-t border-gray-100 px-3 py-2.5">
-          <h4 className="mb-2 flex items-center gap-2 text-[11px] font-semibold uppercase tracking-wider text-gray-400">
-            Relationships
-            <span className="rounded-full bg-gray-100 px-1.5 py-0.5 text-[10px] font-semibold tabular-nums text-gray-400">
-              {relationships.length}
-            </span>
-          </h4>
-          <div className="max-h-28 space-y-1 overflow-y-auto">
-            {relationships.map((rel) => (
-              <div key={rel.id} className="flex items-center gap-1.5 rounded-md bg-gray-50 px-2 py-1 text-[11px]">
-                <span className="truncate font-mono text-gray-600">{rel.from_table}.{rel.from_column}</span>
-                <IconLink />
-                <span className="truncate font-mono text-gray-600">{rel.to_table}.{rel.to_column}</span>
-                <span className="ml-auto flex-shrink-0 rounded bg-gray-200/60 px-1 py-px text-[9px] font-medium text-gray-500">
-                  {rel.relationship_type}
-                </span>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   );
 }
@@ -700,11 +914,34 @@ function ScoreBanner({ score }: { score: EnrichmentScoreReport }) {
 
 function RecommendationsList({
   recommendations,
+  connectionId,
 }: {
   recommendations: EnrichmentRecommendation[];
+  connectionId: string;
 }) {
+  const queryClient = useQueryClient();
   const [expanded, setExpanded] = useState(false);
+  const [bulkRunning, setBulkRunning] = useState(false);
+  const [bulkProgress, setBulkProgress] = useState<BulkValueGenProgress | null>(null);
   const shown = expanded ? recommendations : recommendations.slice(0, 3);
+
+  const addValuesCount = recommendations.filter((r) => r.action === "add_values").length;
+
+  const handleBulkValues = async () => {
+    setBulkRunning(true);
+    setBulkProgress(null);
+    try {
+      await bulkGenerateValueDescriptions(connectionId, (p) => setBulkProgress(p));
+      queryClient.invalidateQueries({ queryKey: ["recommendations", connectionId] });
+      queryClient.invalidateQueries({ queryKey: ["enrichment-score", connectionId] });
+      queryClient.invalidateQueries({ queryKey: ["value-descriptions"] });
+    } catch {
+      // silently fail
+    } finally {
+      setBulkRunning(false);
+      setBulkProgress(null);
+    }
+  };
 
   return (
     <div className="mb-4 rounded-xl border border-amber-200/60 bg-amber-50 p-4">
@@ -727,14 +964,39 @@ function RecommendationsList({
           </li>
         ))}
       </ul>
-      {recommendations.length > 3 && (
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="mt-2 text-xs font-semibold text-amber-600 hover:text-amber-800 hover:underline"
-        >
-          {expanded ? "Show less" : `Show all ${recommendations.length}`}
-        </button>
-      )}
+      <div className="mt-2 flex items-center gap-3">
+        {recommendations.length > 3 && (
+          <button
+            onClick={() => setExpanded(!expanded)}
+            className="text-xs font-semibold text-amber-600 hover:text-amber-800 hover:underline"
+          >
+            {expanded ? "Show less" : `Show all ${recommendations.length}`}
+          </button>
+        )}
+        {addValuesCount > 0 && (
+          <button
+            onClick={handleBulkValues}
+            disabled={bulkRunning}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-purple-200 bg-purple-50 px-3 py-1.5 text-xs font-semibold text-purple-700 shadow-sm transition-all hover:bg-purple-100 disabled:opacity-60"
+          >
+            {bulkRunning ? (
+              <svg className="h-3.5 w-3.5 animate-spin" viewBox="0 0 24 24" fill="none">
+                <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+              </svg>
+            ) : (
+              <svg className="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                <path strokeLinecap="round" strokeLinejoin="round" d="M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09z" />
+              </svg>
+            )}
+            {bulkRunning && bulkProgress
+              ? `Processing ${bulkProgress.completed}/${bulkProgress.total}...`
+              : bulkRunning
+                ? "Starting..."
+                : `AI Generate Value Descriptions (${addValuesCount})`}
+          </button>
+        )}
+      </div>
     </div>
   );
 }
@@ -853,10 +1115,16 @@ function TableDetailPanel({
         ) : enrichQ.data && (enrichQ.data.display_name || enrichQ.data.description) ? (
           <div className="mb-5 rounded-lg border border-blue-100 bg-blue-50/50 p-4">
             {enrichQ.data.display_name && (
-              <p className="text-sm font-semibold text-blue-800">{enrichQ.data.display_name}</p>
+              <p className="text-sm font-semibold text-blue-800">
+                {enrichQ.data.display_name}
+                <BilingualBadge text={enrichQ.data.display_name} />
+              </p>
             )}
             {enrichQ.data.description && (
-              <p className="mt-1 text-sm text-blue-700 leading-relaxed">{enrichQ.data.description}</p>
+              <p className="mt-1 text-sm text-blue-700 leading-relaxed">
+                {enrichQ.data.description}
+                <BilingualBadge text={enrichQ.data.description} />
+              </p>
             )}
             {enrichQ.data.business_purpose && (
               <p className="mt-1.5 text-xs text-blue-600">
@@ -1053,14 +1321,21 @@ function ColumnDetailPanel({
         ) : enrichQ.data && (enrichQ.data.display_name || enrichQ.data.description) ? (
           <div className="rounded-lg border border-blue-100 bg-blue-50/50 p-4">
             {enrichQ.data.display_name && (
-              <p className="text-sm font-semibold text-blue-800">{enrichQ.data.display_name}</p>
+              <p className="text-sm font-semibold text-blue-800">
+                {enrichQ.data.display_name}
+                <BilingualBadge text={enrichQ.data.display_name} />
+              </p>
             )}
             {enrichQ.data.description && (
-              <p className="mt-1 text-sm text-blue-700 leading-relaxed">{enrichQ.data.description}</p>
+              <p className="mt-1 text-sm text-blue-700 leading-relaxed">
+                {enrichQ.data.description}
+                <BilingualBadge text={enrichQ.data.description} />
+              </p>
             )}
             {enrichQ.data.business_meaning && (
               <p className="mt-1.5 text-xs text-blue-600">
                 <span className="font-medium">Meaning:</span> {enrichQ.data.business_meaning}
+                <BilingualBadge text={enrichQ.data.business_meaning} />
               </p>
             )}
             {enrichQ.data.synonyms.length > 0 && (
@@ -1097,10 +1372,40 @@ function ValueDescriptionsEditor({ columnId }: { columnId: string }) {
   const [editing, setEditing] = useState(false);
   const [rows, setRows] = useState<ColumnValueDescriptionCreate[]>([]);
   const [suggesting, setSuggesting] = useState(false);
+  const [guidanceText, setGuidanceText] = useState("");
+  const [guidanceEditing, setGuidanceEditing] = useState(false);
+  const [guidanceDirty, setGuidanceDirty] = useState(false);
+
+  const colEnrichQ = useQuery({
+    queryKey: ["column-enrichment", columnId],
+    queryFn: () => fetchColumnEnrichment(columnId),
+  });
+
+  // Sync guidance text from fetched enrichment
+  const currentGuidance = colEnrichQ.data?.value_guidance ?? "";
+  if (!guidanceEditing && guidanceText !== currentGuidance && !guidanceDirty) {
+    setGuidanceText(currentGuidance);
+  }
+
+  const guidanceMut = useMutation({
+    mutationFn: (guidance: string) =>
+      saveColumnEnrichment(columnId, { value_guidance: guidance || null }),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["column-enrichment", columnId] });
+      setGuidanceEditing(false);
+      setGuidanceDirty(false);
+    },
+  });
 
   const valuesQ = useQuery({
     queryKey: ["value-descriptions", columnId],
     queryFn: () => fetchValueDescriptions(columnId),
+  });
+
+  const distinctQ = useQuery({
+    queryKey: ["distinct-values", columnId],
+    queryFn: () => fetchDistinctValues(columnId),
+    enabled: valuesQ.isSuccess && (valuesQ.data?.length ?? 0) === 0,
   });
 
   const saveMut = useMutation({
@@ -1207,6 +1512,56 @@ function ValueDescriptionsEditor({ columnId }: { columnId: string }) {
         )}
       </div>
 
+      {/* Value Guidance for Deep Enrichment */}
+      <div className="mb-2">
+        {guidanceEditing ? (
+          <div className="rounded border border-purple-200 bg-purple-50/30 p-2">
+            <label className="mb-1 block text-[11px] font-medium text-purple-700">
+              AI Guidance for this column&apos;s values
+            </label>
+            <textarea
+              value={guidanceText}
+              onChange={(e) => { setGuidanceText(e.target.value); setGuidanceDirty(true); }}
+              placeholder={'e.g. "ECO" means Ecological Tax, not Economy. Use Greek display names.'}
+              rows={2}
+              className="w-full rounded border border-purple-200 px-2 py-1 text-xs"
+            />
+            <div className="mt-1 flex items-center gap-2">
+              <button
+                onClick={() => guidanceMut.mutate(guidanceText)}
+                disabled={guidanceMut.isPending}
+                className="rounded bg-purple-600 px-2 py-0.5 text-[11px] font-medium text-white hover:bg-purple-700 disabled:opacity-50"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => { setGuidanceEditing(false); setGuidanceDirty(false); setGuidanceText(currentGuidance); }}
+                className="text-[11px] text-gray-500 hover:text-gray-700"
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        ) : currentGuidance ? (
+          <div className="flex items-start gap-2 rounded border border-purple-100 bg-purple-50/30 px-2 py-1.5">
+            <span className="flex-1 text-xs text-purple-700">{currentGuidance}</span>
+            <button
+              onClick={() => setGuidanceEditing(true)}
+              className="text-[10px] text-purple-500 hover:text-purple-700"
+            >
+              Edit
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setGuidanceEditing(true)}
+            className="text-[11px] text-purple-500 hover:text-purple-700"
+          >
+            + Add AI guidance for value descriptions
+          </button>
+        )}
+      </div>
+
       {editing ? (
         <div className="space-y-2 rounded-lg border border-gray-200 bg-gray-50/50 p-3">
           {/* Header */}
@@ -1301,12 +1656,42 @@ function ValueDescriptionsEditor({ columnId }: { columnId: string }) {
               {values.map((v) => (
                 <tr key={v.id}>
                   <td className="px-3 py-1.5 font-mono text-[11px] text-gray-800">{v.value}</td>
-                  <td className="px-3 py-1.5 text-[11px] text-gray-600">{v.display_name || "—"}</td>
-                  <td className="px-3 py-1.5 text-[11px] text-gray-500">{v.description || "—"}</td>
+                  <td className="px-3 py-1.5 text-[11px] text-gray-600">
+                    {v.display_name || "—"}
+                    <BilingualBadge text={v.display_name} />
+                  </td>
+                  <td className="px-3 py-1.5 text-[11px] text-gray-500">
+                    {v.description || "—"}
+                    <BilingualBadge text={v.description} />
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      ) : distinctQ.isLoading ? (
+        <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50/30 px-4 py-3 text-center">
+          <p className="text-xs text-gray-400">Loading distinct values...</p>
+        </div>
+      ) : (distinctQ.data?.length ?? 0) > 0 ? (
+        <div>
+          <div className="mb-1.5 flex items-center gap-2">
+            <span className="text-[10px] font-medium text-gray-400">
+              {distinctQ.data!.length} distinct value{distinctQ.data!.length !== 1 ? "s" : ""} found
+            </span>
+            <span className="text-[10px] text-gray-300">•</span>
+            <span className="text-[10px] text-gray-400">Use <strong>AI Suggest</strong> to generate descriptions</span>
+          </div>
+          <div className="flex flex-wrap gap-1.5">
+            {distinctQ.data!.map((v) => (
+              <span
+                key={v}
+                className="rounded-md border border-gray-200 bg-gray-50 px-2 py-0.5 font-mono text-[11px] text-gray-600"
+              >
+                {v}
+              </span>
+            ))}
+          </div>
         </div>
       ) : (
         <div className="rounded-lg border border-dashed border-gray-200 bg-gray-50/30 px-4 py-3 text-center">
@@ -1471,10 +1856,16 @@ function DatabaseEnrichmentPanel({
         ) : hasData ? (
           <div className="text-sm">
             {enrichQ.data!.display_name && (
-              <p className="font-semibold text-gray-800">{enrichQ.data!.display_name}</p>
+              <p className="font-semibold text-gray-800">
+                {enrichQ.data!.display_name}
+                <BilingualBadge text={enrichQ.data!.display_name} />
+              </p>
             )}
             {enrichQ.data!.description && (
-              <p className="mt-1 text-gray-600 leading-relaxed">{enrichQ.data!.description}</p>
+              <p className="mt-1 text-gray-600 leading-relaxed">
+                {enrichQ.data!.description}
+                <BilingualBadge text={enrichQ.data!.description} />
+              </p>
             )}
             {enrichQ.data!.business_domain && (
               <p className="mt-1.5 text-xs text-gray-400">

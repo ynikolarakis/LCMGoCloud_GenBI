@@ -236,13 +236,12 @@ export function ConnectionFormPage() {
             </label>
             <input
               type="password"
-              required={!isEdit}
               value={form.password}
               onChange={(e) =>
                 setForm((f) => ({ ...f, password: e.target.value }))
               }
               className="mt-1 block w-full rounded-md border border-gray-300 px-3 py-2 text-sm shadow-sm focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
-              placeholder={isEdit ? "(unchanged)" : ""}
+              placeholder={isEdit ? "(unchanged)" : "(optional)"}
             />
           </div>
         </div>

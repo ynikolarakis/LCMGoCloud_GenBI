@@ -50,7 +50,7 @@ async def execute_query(config: ConnectionConfig, password: str, sql: str) -> Ex
     start = time.monotonic()
     try:
         raw = await asyncio.wait_for(
-            asyncio.to_thread(connector.execute_query, limited_sql),
+            connector.execute_query(limited_sql),
             timeout=timeout,
         )
     except asyncio.TimeoutError:

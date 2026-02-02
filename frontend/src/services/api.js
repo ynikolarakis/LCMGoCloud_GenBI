@@ -38,6 +38,26 @@ export const fetchFavorites = (connectionId) => client
     .then((r) => r.data);
 export const toggleFavorite = (queryId) => client.post(`/query/${queryId}/favorite`).then((r) => r.data);
 export const deleteQuery = (queryId) => client.delete(`/query/${queryId}`);
+export const askMultiModel = (connectionId, body) => client
+    .post(`/connections/${connectionId}/query/multi`, body, { timeout: 300000 })
+    .then((r) => r.data);
+export const compareModels = (connectionId, body) => client
+    .post(`/connections/${connectionId}/query/compare`, body, { timeout: 120000 })
+    .then((r) => r.data);
+export const fetchConversations = (connectionId, chatType = "chat") => client
+    .get(`/connections/${connectionId}/conversations?chat_type=${chatType}`)
+    .then((r) => r.data);
+export const createConversation = (connectionId, body) => client
+    .post(`/connections/${connectionId}/conversations`, body)
+    .then((r) => r.data);
+export const fetchConversation = (conversationId) => client
+    .get(`/conversations/${conversationId}`)
+    .then((r) => r.data);
+export const addMessage = (conversationId, body) => client
+    .post(`/conversations/${conversationId}/messages`, body)
+    .then((r) => r.data);
+export const deleteConversation = (conversationId) => client.delete(`/conversations/${conversationId}`);
+export const deleteAllConversations = (connectionId, chatType = "chat") => client.delete(`/connections/${connectionId}/conversations?chat_type=${chatType}`);
 // Discovery
 export const discoverSchema = (connectionId) => client
     .post(`/connections/${connectionId}/discover`)
@@ -48,6 +68,14 @@ export const fetchSchema = (connectionId) => client
 export const fetchTables = (connectionId) => client
     .get(`/connections/${connectionId}/tables`)
     .then((r) => r.data);
+// Relationships
+export const createRelationship = (connectionId, data) => client
+    .post(`/connections/${connectionId}/relationships`, data)
+    .then((r) => r.data);
+export const updateRelationship = (relationshipId, data) => client
+    .put(`/relationships/${relationshipId}`, data)
+    .then((r) => r.data);
+export const deleteRelationship = (relationshipId) => client.delete(`/relationships/${relationshipId}`);
 // Enrichment — Database
 export const fetchDatabaseEnrichment = (connectionId) => client
     .get(`/connections/${connectionId}/enrichment`)
@@ -98,6 +126,61 @@ export const saveValueDescriptions = (columnId, values) => client
 export const suggestValueDescriptions = (columnId) => client
     .post(`/columns/${columnId}/values/ai-suggest`)
     .then((r) => r.data);
+export const fetchDistinctValues = (columnId) => client
+    .get(`/columns/${columnId}/values/distinct`)
+    .then((r) => r.data);
+export async function bulkGenerateValueDescriptions(connectionId, onProgress) {
+    const response = await fetch(`/api/v1/connections/${connectionId}/values/bulk-ai-generate?language=el`, { method: "POST" });
+    if (!response.ok || !response.body) {
+        throw new Error("Bulk value generation request failed");
+    }
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let result = { columns_processed: 0, columns_failed: 0 };
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done)
+            break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.replace(/\r\n/g, "\n").split("\n");
+        buffer = lines.pop() ?? "";
+        let currentEvent = "";
+        for (const line of lines) {
+            const trimmed = line.trim();
+            if (trimmed.startsWith("event:")) {
+                currentEvent = trimmed.slice(6).trim();
+            }
+            else if (trimmed.startsWith("data:")) {
+                const raw = trimmed.slice(5).trim();
+                if (!raw)
+                    continue;
+                try {
+                    const data = JSON.parse(raw);
+                    if (currentEvent === "progress") {
+                        onProgress?.(data);
+                    }
+                    else if (currentEvent === "complete") {
+                        result = data;
+                    }
+                    else if (currentEvent === "error") {
+                        throw new Error(data.error || "Bulk generation failed");
+                    }
+                }
+                catch (e) {
+                    if (e instanceof Error && e.message !== "Bulk generation failed") {
+                        // skip malformed SSE
+                    }
+                    else {
+                        throw e;
+                    }
+                }
+                currentEvent = "";
+            }
+        }
+    }
+    return result;
+}
 // Enrichment — Score
 export const fetchEnrichmentScore = (connectionId) => client
     .get(`/connections/${connectionId}/enrichment-score`)
@@ -121,10 +204,39 @@ export const addDashboardCard = (dashboardId, data) => client
     .post(`/dashboards/${dashboardId}/cards`, data)
     .then((r) => r.data);
 export const removeDashboardCard = (cardId) => client.delete(`/dashboard-cards/${cardId}`);
-// Deep Enrichment
-export const startDeepEnrich = (connectionId) => client
-    .post(`/enrichment/${connectionId}/deep-enrich`)
+// Query Instructions
+export const fetchInstructions = (connectionId) => client
+    .get(`/connections/${connectionId}/instructions`)
     .then((r) => r.data);
+export const saveInstructions = (connectionId, instructions) => client
+    .put(`/connections/${connectionId}/instructions`, {
+    instructions,
+})
+    .then((r) => r.data);
+export const generateInstructions = (connectionId) => client
+    .post(`/connections/${connectionId}/instructions/generate`)
+    .then((r) => r.data);
+export const detectSoftware = (connectionId) => client
+    .post(`/connections/${connectionId}/software-detect`)
+    .then((r) => r.data);
+export const saveSoftwareGuidance = (connectionId, data) => client
+    .post(`/connections/${connectionId}/software-guidance`, data)
+    .then((r) => r.data);
+export const fetchSoftwareGuidance = (connectionId) => client
+    .get(`/connections/${connectionId}/software-guidance`)
+    .then((r) => r.data);
+export const deleteSoftwareGuidance = (connectionId) => client.delete(`/connections/${connectionId}/software-guidance`);
+// Deep Enrichment
+export const startDeepEnrich = (connectionId, options) => client
+    .post(`/enrichment/${connectionId}/deep-enrich`, options ?? {})
+    .then((r) => r.data);
+export const uploadManual = (connectionId, file) => {
+    const form = new FormData();
+    form.append("file", file);
+    return client
+        .post(`/enrichment/${connectionId}/manual`, form, { headers: { "Content-Type": "multipart/form-data" } })
+        .then((r) => r.data);
+};
 export async function streamDeepEnrich(jobId, callbacks) {
     const response = await fetch(`/api/v1/enrichment/deep-enrich/${jobId}/stream`);
     if (!response.ok || !response.body) {
@@ -175,31 +287,48 @@ export async function askQuestionStream(connectionId, body, callbacks) {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "";
+    let gotResult = false;
     while (true) {
         const { done, value } = await reader.read();
         if (done)
             break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split("\n");
+        // Handle both \r\n and \n line endings
+        const lines = buffer.replace(/\r\n/g, "\n").split("\n");
         buffer = lines.pop() ?? "";
         let currentEvent = "";
         for (const line of lines) {
-            if (line.startsWith("event: ")) {
-                currentEvent = line.slice(7);
+            const trimmed = line.trim();
+            if (trimmed.startsWith("event:")) {
+                currentEvent = trimmed.slice(6).trim();
             }
-            else if (line.startsWith("data: ")) {
-                const data = JSON.parse(line.slice(6));
-                if (currentEvent === "status") {
-                    callbacks.onStatus?.(data.phase, data.message, data.sql);
+            else if (trimmed.startsWith("data:")) {
+                const raw = trimmed.slice(5).trim();
+                if (!raw)
+                    continue;
+                try {
+                    const data = JSON.parse(raw);
+                    if (currentEvent === "status") {
+                        callbacks.onStatus?.(data.phase, data.message, data.sql);
+                    }
+                    else if (currentEvent === "result") {
+                        callbacks.onResult?.(data);
+                        gotResult = true;
+                    }
+                    else if (currentEvent === "error") {
+                        callbacks.onError?.(data);
+                        gotResult = true;
+                    }
                 }
-                else if (currentEvent === "result") {
-                    callbacks.onResult?.(data);
-                }
-                else if (currentEvent === "error") {
-                    callbacks.onError?.(data);
+                catch {
+                    // Skip malformed SSE data lines
                 }
                 currentEvent = "";
             }
         }
+    }
+    // If stream ended without a result/error event, throw so fallback kicks in
+    if (!gotResult) {
+        throw new Error("Stream ended without result");
     }
 }

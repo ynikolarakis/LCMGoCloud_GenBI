@@ -1,4 +1,5 @@
 import type { QueryResponse } from "@/types/api";
+import { formatColumnName } from "@/utils/formatColumnName";
 
 interface Props {
   response: QueryResponse;
@@ -8,9 +9,8 @@ export function KPICard({ response }: Props) {
   const { columns, rows } = response;
   if (rows.length === 0) return null;
 
-  // Single value or label+value
   const value = columns.length === 1 ? rows[0][0] : rows[0][1];
-  const label = columns.length === 1 ? columns[0] : String(rows[0][0]);
+  const label = columns.length === 1 ? formatColumnName(columns[0]) : String(rows[0][0]);
 
   const formatted =
     typeof value === "number"

@@ -7,6 +7,8 @@ import {
   testConnection,
 } from "@/services/api";
 import type { Connection, ConnectionTestResult } from "@/types/api";
+import { SharePocModal } from "@/components/connections/SharePocModal";
+import { listPocsForConnection, deactivatePoc, deletePoc, type PocListItem } from "@/services/pocApi";
 
 const DB_LABELS: Record<string, string> = {
   postgresql: "PostgreSQL",
@@ -27,6 +29,7 @@ export function ConnectionsPage() {
   >({});
   const [testingId, setTestingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [pocModalConn, setPocModalConn] = useState<Connection | null>(null);
 
   const { data: connections = [], isLoading, error } = useQuery({
     queryKey: ["connections"],
@@ -121,9 +124,18 @@ export function ConnectionsPage() {
               onTest={() => handleTest(conn.id)}
               onDelete={() => handleDelete(conn.id)}
               onCancelDelete={() => setDeletingId(null)}
+              onSharePoc={() => setPocModalConn(conn)}
             />
           ))}
         </div>
+      )}
+
+      {pocModalConn && (
+        <SharePocModal
+          connectionId={pocModalConn.id}
+          connectionName={pocModalConn.name}
+          onClose={() => setPocModalConn(null)}
+        />
       )}
     </div>
   );
@@ -137,6 +149,7 @@ function ConnectionCard({
   onTest,
   onDelete,
   onCancelDelete,
+  onSharePoc,
 }: {
   connection: Connection;
   testResult?: ConnectionTestResult;
@@ -145,7 +158,48 @@ function ConnectionCard({
   onTest: () => void;
   onDelete: () => void;
   onCancelDelete: () => void;
+  onSharePoc: () => void;
 }) {
+  const [showPocs, setShowPocs] = useState(false);
+  const [pocs, setPocs] = useState<PocListItem[]>([]);
+  const [pocsLoading, setPocsLoading] = useState(false);
+  const [copied, setCopied] = useState<string | null>(null);
+
+  const loadPocs = async () => {
+    if (showPocs) {
+      setShowPocs(false);
+      return;
+    }
+    setPocsLoading(true);
+    try {
+      const list = await listPocsForConnection(connection.id);
+      setPocs(list);
+      setShowPocs(true);
+    } catch {
+      setPocs([]);
+      setShowPocs(true);
+    } finally {
+      setPocsLoading(false);
+    }
+  };
+
+  const handleCopy = (pocId: string) => {
+    const url = `${window.location.origin}/poc/${pocId}`;
+    navigator.clipboard.writeText(url);
+    setCopied(pocId);
+    setTimeout(() => setCopied(null), 2000);
+  };
+
+  const handleDeactivate = async (pocId: string) => {
+    await deactivatePoc(pocId);
+    setPocs((prev) => prev.map((p) => p.id === pocId ? { ...p, is_active: false } : p));
+  };
+
+  const handleDeletePoc = async (pocId: string) => {
+    await deletePoc(pocId);
+    setPocs((prev) => prev.filter((p) => p.id !== pocId));
+  };
+
   return (
     <div className="rounded-lg border bg-white p-5 shadow-sm">
       <div className="flex items-start justify-between">
@@ -173,6 +227,19 @@ function ConnectionCard({
         </div>
 
         <div className="flex items-center gap-2">
+          <button
+            onClick={onSharePoc}
+            className="rounded border border-purple-300 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-50"
+          >
+            Share POC
+          </button>
+          <button
+            onClick={loadPocs}
+            disabled={pocsLoading}
+            className="rounded border border-purple-200 px-3 py-1.5 text-xs font-medium text-purple-600 hover:bg-purple-50 disabled:opacity-50"
+          >
+            {pocsLoading ? "..." : showPocs ? "Hide POCs" : "POCs"}
+          </button>
           <Link
             to={`/connections/${connection.id}/schema`}
             className="rounded border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50"
@@ -231,6 +298,71 @@ function ConnectionCard({
           )}
           {testResult.server_version && (
             <span className="ml-2 text-xs">v{testResult.server_version}</span>
+          )}
+        </div>
+      )}
+
+      {showPocs && (
+        <div className="mt-3 border-t pt-3">
+          <h4 className="mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500">
+            POC Instances
+          </h4>
+          {pocs.length === 0 ? (
+            <p className="text-xs text-gray-400">No POC instances yet.</p>
+          ) : (
+            <div className="space-y-2">
+              {pocs.map((poc) => (
+                <div
+                  key={poc.id}
+                  className="flex items-center justify-between rounded border bg-gray-50 px-3 py-2"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm font-medium text-gray-800">
+                        {poc.customer_name}
+                      </span>
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-xs font-medium ${
+                          poc.is_active
+                            ? "bg-green-100 text-green-700"
+                            : "bg-gray-200 text-gray-500"
+                        }`}
+                      >
+                        {poc.is_active ? "Active" : "Inactive"}
+                      </span>
+                      <span className="text-xs text-gray-400">
+                        {poc.model_id}
+                      </span>
+                    </div>
+                    <p className="mt-0.5 truncate text-xs text-gray-500 font-mono">
+                      {window.location.origin}/poc/{poc.id}
+                    </p>
+                  </div>
+                  <div className="ml-3 flex items-center gap-1.5 flex-shrink-0">
+                    <button
+                      onClick={() => handleCopy(poc.id)}
+                      className="rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-white"
+                    >
+                      {copied === poc.id ? "Copied!" : "Copy URL"}
+                    </button>
+                    {poc.is_active && (
+                      <button
+                        onClick={() => handleDeactivate(poc.id)}
+                        className="rounded border border-yellow-300 px-2 py-1 text-xs text-yellow-700 hover:bg-yellow-50"
+                      >
+                        Deactivate
+                      </button>
+                    )}
+                    <button
+                      onClick={() => handleDeletePoc(poc.id)}
+                      className="rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50"
+                    >
+                      Delete
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
           )}
         </div>
       )}

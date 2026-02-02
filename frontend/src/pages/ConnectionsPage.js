@@ -3,6 +3,8 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { Link } from "react-router-dom";
 import { fetchConnections, deleteConnection, testConnection, } from "@/services/api";
+import { SharePocModal } from "@/components/connections/SharePocModal";
+import { listPocsForConnection, deactivatePoc, deletePoc } from "@/services/pocApi";
 const DB_LABELS = {
     postgresql: "PostgreSQL",
     mysql: "MySQL",
@@ -18,6 +20,7 @@ export function ConnectionsPage() {
     const [testResults, setTestResults] = useState({});
     const [testingId, setTestingId] = useState(null);
     const [deletingId, setDeletingId] = useState(null);
+    const [pocModalConn, setPocModalConn] = useState(null);
     const { data: connections = [], isLoading, error } = useQuery({
         queryKey: ["connections"],
         queryFn: fetchConnections,
@@ -59,8 +62,47 @@ export function ConnectionsPage() {
     if (error) {
         return (_jsx("div", { className: "mx-auto max-w-4xl px-6 py-8", children: _jsx("p", { className: "text-red-600", children: "Failed to load connections." }) }));
     }
-    return (_jsxs("div", { className: "mx-auto max-w-5xl px-6 py-8", children: [_jsxs("div", { className: "mb-6 flex items-center justify-between", children: [_jsxs("div", { children: [_jsx("h2", { className: "text-2xl font-semibold text-gray-900", children: "Database Connections" }), _jsx("p", { className: "mt-1 text-sm text-gray-500", children: "Manage your database connections for natural language querying." })] }), _jsx(Link, { to: "/connections/new", className: "rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700", children: "Add Connection" })] }), connections.length === 0 ? (_jsxs("div", { className: "rounded-lg border-2 border-dashed border-gray-300 py-12 text-center", children: [_jsx("p", { className: "text-gray-500", children: "No connections yet." }), _jsx(Link, { to: "/connections/new", className: "mt-2 inline-block text-sm font-medium text-blue-600 hover:text-blue-700", children: "Create your first connection" })] })) : (_jsx("div", { className: "space-y-4", children: connections.map((conn) => (_jsx(ConnectionCard, { connection: conn, testResult: testResults[conn.id], isTesting: testingId === conn.id, isDeleting: deletingId === conn.id, onTest: () => handleTest(conn.id), onDelete: () => handleDelete(conn.id), onCancelDelete: () => setDeletingId(null) }, conn.id))) }))] }));
+    return (_jsxs("div", { className: "mx-auto max-w-5xl px-6 py-8", children: [_jsxs("div", { className: "mb-6 flex items-center justify-between", children: [_jsxs("div", { children: [_jsx("h2", { className: "text-2xl font-semibold text-gray-900", children: "Database Connections" }), _jsx("p", { className: "mt-1 text-sm text-gray-500", children: "Manage your database connections for natural language querying." })] }), _jsx(Link, { to: "/connections/new", className: "rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white shadow-sm hover:bg-blue-700", children: "Add Connection" })] }), connections.length === 0 ? (_jsxs("div", { className: "rounded-lg border-2 border-dashed border-gray-300 py-12 text-center", children: [_jsx("p", { className: "text-gray-500", children: "No connections yet." }), _jsx(Link, { to: "/connections/new", className: "mt-2 inline-block text-sm font-medium text-blue-600 hover:text-blue-700", children: "Create your first connection" })] })) : (_jsx("div", { className: "space-y-4", children: connections.map((conn) => (_jsx(ConnectionCard, { connection: conn, testResult: testResults[conn.id], isTesting: testingId === conn.id, isDeleting: deletingId === conn.id, onTest: () => handleTest(conn.id), onDelete: () => handleDelete(conn.id), onCancelDelete: () => setDeletingId(null), onSharePoc: () => setPocModalConn(conn) }, conn.id))) })), pocModalConn && (_jsx(SharePocModal, { connectionId: pocModalConn.id, connectionName: pocModalConn.name, onClose: () => setPocModalConn(null) }))] }));
 }
-function ConnectionCard({ connection, testResult, isTesting, isDeleting, onTest, onDelete, onCancelDelete, }) {
-    return (_jsxs("div", { className: "rounded-lg border bg-white p-5 shadow-sm", children: [_jsxs("div", { className: "flex items-start justify-between", children: [_jsxs("div", { className: "flex-1", children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsx("h3", { className: "text-lg font-medium text-gray-900", children: connection.name }), _jsx("span", { className: `inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[connection.status] ?? STATUS_STYLES.inactive}`, children: connection.status }), _jsx("span", { className: "rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600", children: DB_LABELS[connection.db_type] ?? connection.db_type })] }), _jsxs("p", { className: "mt-1 text-sm text-gray-500", children: [connection.host, ":", connection.port, " / ", connection.database] }), _jsxs("p", { className: "text-xs text-gray-400", children: ["User: ", connection.username, connection.ssl_enabled && " | SSL"] })] }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsx(Link, { to: `/connections/${connection.id}/schema`, className: "rounded border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50", children: "Schema" }), _jsx(Link, { to: `/connections/${connection.id}/edit`, className: "rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50", children: "Edit" }), _jsx("button", { onClick: onTest, disabled: isTesting, className: "rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50", children: isTesting ? "Testing..." : "Test" }), isDeleting ? (_jsxs("div", { className: "flex gap-1", children: [_jsx("button", { onClick: onDelete, className: "rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700", children: "Confirm" }), _jsx("button", { onClick: onCancelDelete, className: "rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50", children: "Cancel" })] })) : (_jsx("button", { onClick: onDelete, className: "rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50", children: "Delete" }))] })] }), testResult && (_jsxs("div", { className: `mt-3 rounded p-3 text-sm ${testResult.success ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`, children: [_jsxs("span", { className: "font-medium", children: [testResult.success ? "Connected" : "Failed", ":"] }), " ", testResult.message, testResult.latency_ms != null && (_jsxs("span", { className: "ml-2 text-xs", children: ["(", testResult.latency_ms, "ms)"] })), testResult.server_version && (_jsxs("span", { className: "ml-2 text-xs", children: ["v", testResult.server_version] }))] }))] }));
+function ConnectionCard({ connection, testResult, isTesting, isDeleting, onTest, onDelete, onCancelDelete, onSharePoc, }) {
+    const [showPocs, setShowPocs] = useState(false);
+    const [pocs, setPocs] = useState([]);
+    const [pocsLoading, setPocsLoading] = useState(false);
+    const [copied, setCopied] = useState(null);
+    const loadPocs = async () => {
+        if (showPocs) {
+            setShowPocs(false);
+            return;
+        }
+        setPocsLoading(true);
+        try {
+            const list = await listPocsForConnection(connection.id);
+            setPocs(list);
+            setShowPocs(true);
+        }
+        catch {
+            setPocs([]);
+            setShowPocs(true);
+        }
+        finally {
+            setPocsLoading(false);
+        }
+    };
+    const handleCopy = (pocId) => {
+        const url = `${window.location.origin}/poc/${pocId}`;
+        navigator.clipboard.writeText(url);
+        setCopied(pocId);
+        setTimeout(() => setCopied(null), 2000);
+    };
+    const handleDeactivate = async (pocId) => {
+        await deactivatePoc(pocId);
+        setPocs((prev) => prev.map((p) => p.id === pocId ? { ...p, is_active: false } : p));
+    };
+    const handleDeletePoc = async (pocId) => {
+        await deletePoc(pocId);
+        setPocs((prev) => prev.filter((p) => p.id !== pocId));
+    };
+    return (_jsxs("div", { className: "rounded-lg border bg-white p-5 shadow-sm", children: [_jsxs("div", { className: "flex items-start justify-between", children: [_jsxs("div", { className: "flex-1", children: [_jsxs("div", { className: "flex items-center gap-3", children: [_jsx("h3", { className: "text-lg font-medium text-gray-900", children: connection.name }), _jsx("span", { className: `inline-flex rounded-full px-2.5 py-0.5 text-xs font-medium ${STATUS_STYLES[connection.status] ?? STATUS_STYLES.inactive}`, children: connection.status }), _jsx("span", { className: "rounded bg-gray-100 px-2 py-0.5 text-xs text-gray-600", children: DB_LABELS[connection.db_type] ?? connection.db_type })] }), _jsxs("p", { className: "mt-1 text-sm text-gray-500", children: [connection.host, ":", connection.port, " / ", connection.database] }), _jsxs("p", { className: "text-xs text-gray-400", children: ["User: ", connection.username, connection.ssl_enabled && " | SSL"] })] }), _jsxs("div", { className: "flex items-center gap-2", children: [_jsx("button", { onClick: onSharePoc, className: "rounded border border-purple-300 px-3 py-1.5 text-xs font-medium text-purple-700 hover:bg-purple-50", children: "Share POC" }), _jsx("button", { onClick: loadPocs, disabled: pocsLoading, className: "rounded border border-purple-200 px-3 py-1.5 text-xs font-medium text-purple-600 hover:bg-purple-50 disabled:opacity-50", children: pocsLoading ? "..." : showPocs ? "Hide POCs" : "POCs" }), _jsx(Link, { to: `/connections/${connection.id}/schema`, className: "rounded border border-blue-300 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-50", children: "Schema" }), _jsx(Link, { to: `/connections/${connection.id}/edit`, className: "rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50", children: "Edit" }), _jsx("button", { onClick: onTest, disabled: isTesting, className: "rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50 disabled:opacity-50", children: isTesting ? "Testing..." : "Test" }), isDeleting ? (_jsxs("div", { className: "flex gap-1", children: [_jsx("button", { onClick: onDelete, className: "rounded bg-red-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-red-700", children: "Confirm" }), _jsx("button", { onClick: onCancelDelete, className: "rounded border border-gray-300 px-3 py-1.5 text-xs font-medium text-gray-700 hover:bg-gray-50", children: "Cancel" })] })) : (_jsx("button", { onClick: onDelete, className: "rounded border border-red-200 px-3 py-1.5 text-xs font-medium text-red-600 hover:bg-red-50", children: "Delete" }))] })] }), testResult && (_jsxs("div", { className: `mt-3 rounded p-3 text-sm ${testResult.success ? "bg-green-50 text-green-800" : "bg-red-50 text-red-800"}`, children: [_jsxs("span", { className: "font-medium", children: [testResult.success ? "Connected" : "Failed", ":"] }), " ", testResult.message, testResult.latency_ms != null && (_jsxs("span", { className: "ml-2 text-xs", children: ["(", testResult.latency_ms, "ms)"] })), testResult.server_version && (_jsxs("span", { className: "ml-2 text-xs", children: ["v", testResult.server_version] }))] })), showPocs && (_jsxs("div", { className: "mt-3 border-t pt-3", children: [_jsx("h4", { className: "mb-2 text-xs font-semibold uppercase tracking-wide text-gray-500", children: "POC Instances" }), pocs.length === 0 ? (_jsx("p", { className: "text-xs text-gray-400", children: "No POC instances yet." })) : (_jsx("div", { className: "space-y-2", children: pocs.map((poc) => (_jsxs("div", { className: "flex items-center justify-between rounded border bg-gray-50 px-3 py-2", children: [_jsxs("div", { className: "flex-1 min-w-0", children: [_jsxs("div", { className: "flex items-center gap-2", children: [_jsx("span", { className: "text-sm font-medium text-gray-800", children: poc.customer_name }), _jsx("span", { className: `rounded-full px-2 py-0.5 text-xs font-medium ${poc.is_active
+                                                        ? "bg-green-100 text-green-700"
+                                                        : "bg-gray-200 text-gray-500"}`, children: poc.is_active ? "Active" : "Inactive" }), _jsx("span", { className: "text-xs text-gray-400", children: poc.model_id })] }), _jsxs("p", { className: "mt-0.5 truncate text-xs text-gray-500 font-mono", children: [window.location.origin, "/poc/", poc.id] })] }), _jsxs("div", { className: "ml-3 flex items-center gap-1.5 flex-shrink-0", children: [_jsx("button", { onClick: () => handleCopy(poc.id), className: "rounded border border-gray-300 px-2 py-1 text-xs text-gray-600 hover:bg-white", children: copied === poc.id ? "Copied!" : "Copy URL" }), poc.is_active && (_jsx("button", { onClick: () => handleDeactivate(poc.id), className: "rounded border border-yellow-300 px-2 py-1 text-xs text-yellow-700 hover:bg-yellow-50", children: "Deactivate" })), _jsx("button", { onClick: () => handleDeletePoc(poc.id), className: "rounded border border-red-200 px-2 py-1 text-xs text-red-600 hover:bg-red-50", children: "Delete" })] })] }, poc.id))) }))] }))] }));
 }

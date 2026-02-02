@@ -10,7 +10,11 @@ from fastapi.responses import StreamingResponse
 
 from src.db.session import get_db
 from src.models.query import (
+    CompareRequest,
+    CompareResponse,
     ConversationTurn,
+    MultiModelRequest,
+    MultiModelResponse,
     QueryError,
     QueryHistoryItem,
     QueryRequest,
@@ -103,6 +107,26 @@ async def delete_query(query_id: UUID):
 
 
 @router.post(
+    "/api/v1/connections/{connection_id}/query/multi",
+    response_model=MultiModelResponse,
+    summary="Run a question against all models in parallel",
+)
+async def ask_multi(connection_id: UUID, body: MultiModelRequest):
+    engine = QueryEngine()
+    return await engine.ask_multi(connection_id, body)
+
+
+@router.post(
+    "/api/v1/connections/{connection_id}/query/compare",
+    response_model=CompareResponse,
+    summary="Compare results from multiple models using Opus",
+)
+async def compare_models(connection_id: UUID, body: CompareRequest):
+    engine = QueryEngine()
+    return await engine.ask_compare(connection_id, body)
+
+
+@router.post(
     "/api/v1/connections/{connection_id}/query/stream",
     summary="Ask a question with SSE streaming progress",
 )
@@ -113,35 +137,42 @@ async def ask_question_stream(connection_id: UUID, body: AskRequest):
         def sse_event(event: str, data: dict) -> str:
             return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
-        yield sse_event("status", {"phase": "generating", "message": "Generating SQL..."})
+        yield sse_event("status", {"phase": "generating", "message": "Thinking..."})
 
-        engine = QueryEngine()
-        result = await engine.ask(
-            connection_id, body, conversation_history=body.history or None
-        )
+        try:
+            engine = QueryEngine()
+            result = await engine.ask(
+                connection_id, body, conversation_history=body.history or None
+            )
 
-        if isinstance(result, QueryError):
-            yield sse_event("error", result.model_dump())
-            return
+            if isinstance(result, QueryError):
+                yield sse_event("error", result.model_dump())
+                return
 
-        yield sse_event("status", {"phase": "sql_generated", "message": "SQL generated", "sql": result.sql})
-        yield sse_event("status", {"phase": "executing", "message": "Executing query..."})
+            # Only show SQL phases if there's actual SQL
+            if result.sql:
+                yield sse_event("status", {"phase": "sql_generated", "message": "SQL generated", "sql": result.sql})
+                yield sse_event("status", {"phase": "executing", "message": "Executing query..."})
 
-        # Save to history
-        async with get_db() as conn:
-            repo = QueryRepository(conn)
-            await repo.save_query(QueryHistoryItem(
-                id=result.id,
-                connection_id=result.connection_id,
-                conversation_id=result.conversation_id,
-                question=result.question,
-                sql=result.sql,
-                explanation=result.explanation,
-                row_count=result.row_count,
-            ))
+                # Save to history only for actual queries
+                async with get_db() as conn:
+                    repo = QueryRepository(conn)
+                    await repo.save_query(QueryHistoryItem(
+                        id=result.id,
+                        connection_id=result.connection_id,
+                        conversation_id=result.conversation_id,
+                        question=result.question,
+                        sql=result.sql,
+                        explanation=result.explanation,
+                        row_count=result.row_count,
+                    ))
 
-        yield sse_event("result", result.model_dump(mode="json"))
-        yield sse_event("done", {})
+            yield sse_event("result", result.model_dump(mode="json"))
+            yield sse_event("done", {})
+        except Exception as exc:
+            import logging
+            logging.getLogger(__name__).error("Stream error: %s", exc, exc_info=True)
+            yield sse_event("error", {"error": str(exc), "error_type": "stream"})
 
     return StreamingResponse(
         event_stream(),

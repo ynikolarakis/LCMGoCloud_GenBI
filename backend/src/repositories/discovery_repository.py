@@ -34,8 +34,9 @@ class DiscoveryRepository:
         await self.conn.execute(
             "DELETE FROM discovered_tables WHERE connection_id = %s", (cid,)
         )
+        # Only delete auto-detected relationships; preserve user-created and AI-generated ones
         await self.conn.execute(
-            "DELETE FROM table_relationships WHERE connection_id = %s", (cid,)
+            "DELETE FROM table_relationships WHERE connection_id = %s AND is_auto_detected = true", (cid,)
         )
 
         # Insert tables and columns
@@ -107,6 +108,11 @@ class DiscoveryRepository:
         from_col = await self._find_column_id(from_table, rel.from_column)
         to_col = await self._find_column_id(to_table, rel.to_column)
         if from_col is None or to_col is None:
+            return
+
+        # Skip if a manual/AI relationship already exists for this column pair
+        exists = await self.relationship_exists(rel.connection_id, from_col, to_col)
+        if exists:
             return
 
         await self.conn.execute(
@@ -286,6 +292,111 @@ class DiscoveryRepository:
                 sample.sampled_at,
             ),
         )
+
+    async def create_relationship(
+        self,
+        connection_id: UUID,
+        from_table_id: UUID,
+        from_column_id: UUID,
+        to_table_id: UUID,
+        to_column_id: UUID,
+        relationship_type: str = "many-to-one",
+        description: str | None = None,
+    ) -> dict:
+        """Create a manual relationship and return it with names."""
+        from uuid import uuid4
+
+        rel_id = uuid4()
+        await self.conn.execute(
+            """
+            INSERT INTO table_relationships
+                (id, connection_id, from_table_id, from_column_id,
+                 to_table_id, to_column_id, relationship_type,
+                 is_auto_detected, description)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, false, %s)
+            """,
+            (
+                str(rel_id),
+                str(connection_id),
+                str(from_table_id),
+                str(from_column_id),
+                str(to_table_id),
+                str(to_column_id),
+                relationship_type,
+                description,
+            ),
+        )
+        return await self.get_relationship_by_id(rel_id)
+
+    async def get_relationship_by_id(self, relationship_id: UUID) -> dict | None:
+        """Get a single relationship with table/column names."""
+        cursor = await self.conn.execute(
+            """
+            SELECT
+                r.id, r.connection_id, r.relationship_type, r.is_auto_detected, r.description,
+                ft.schema_name AS from_schema, ft.table_name AS from_table,
+                fc.column_name AS from_column,
+                tt.schema_name AS to_schema, tt.table_name AS to_table,
+                tc.column_name AS to_column
+            FROM table_relationships r
+            JOIN discovered_tables ft ON r.from_table_id = ft.id
+            JOIN discovered_columns fc ON r.from_column_id = fc.id
+            JOIN discovered_tables tt ON r.to_table_id = tt.id
+            JOIN discovered_columns tc ON r.to_column_id = tc.id
+            WHERE r.id = %s
+            """,
+            (str(relationship_id),),
+        )
+        return await cursor.fetchone()
+
+    async def update_relationship(
+        self,
+        relationship_id: UUID,
+        relationship_type: str | None = None,
+        description: str | None = None,
+    ) -> dict | None:
+        """Update relationship type and/or description."""
+        parts = []
+        values: list = []
+        if relationship_type is not None:
+            parts.append("relationship_type = %s")
+            values.append(relationship_type)
+        if description is not None:
+            parts.append("description = %s")
+            values.append(description)
+        if not parts:
+            return await self.get_relationship_by_id(relationship_id)
+        values.append(str(relationship_id))
+        await self.conn.execute(
+            f"UPDATE table_relationships SET {', '.join(parts)} WHERE id = %s",  # noqa: S608
+            tuple(values),
+        )
+        return await self.get_relationship_by_id(relationship_id)
+
+    async def delete_relationship(self, relationship_id: UUID) -> bool:
+        """Delete a relationship by ID."""
+        cursor = await self.conn.execute(
+            "DELETE FROM table_relationships WHERE id = %s",
+            (str(relationship_id),),
+        )
+        return cursor.rowcount > 0
+
+    async def relationship_exists(
+        self,
+        connection_id: UUID,
+        from_column_id: UUID,
+        to_column_id: UUID,
+    ) -> bool:
+        """Check if a relationship between two columns already exists."""
+        cursor = await self.conn.execute(
+            """
+            SELECT 1 FROM table_relationships
+            WHERE connection_id = %s AND from_column_id = %s AND to_column_id = %s
+            LIMIT 1
+            """,
+            (str(connection_id), str(from_column_id), str(to_column_id)),
+        )
+        return await cursor.fetchone() is not None
 
     async def has_discovery_data(self, connection_id: UUID) -> bool:
         """Check if discovery data exists for a connection."""

@@ -13,6 +13,7 @@ from uuid import UUID
 import boto3
 from botocore.config import Config as BotoConfig
 from functools import lru_cache
+from pydantic import BaseModel
 
 from src.config import get_settings
 from src.connectors.base import BaseConnector, ConnectorFactory
@@ -29,9 +30,31 @@ from src.models.enrichment import (
     TableEnrichmentCreate,
 )
 from src.services.connection.secrets import SecretsManagerClient
-from src.services.enrichment.deep_enrichment_prompts import DEEP_ENRICHMENT_SYSTEM_PROMPT
+from src.services.enrichment.deep_enrichment_prompts import build_deep_enrichment_prompt
 
 logger = logging.getLogger(__name__)
+
+
+class DeepEnrichOptions(BaseModel):
+    """Configuration options for deep enrichment."""
+
+    primary_language: str = "el"
+    secondary_language: str | None = "en"
+    business_domain: str | None = None
+    company_name: str | None = None
+    additional_instructions: str | None = None
+    value_threshold: int = 150
+    manual_id: str | None = None
+    generate_tables: bool = True
+    generate_columns: bool = True
+    generate_values: bool = True
+    generate_glossary: bool = True
+    generate_examples: bool = True
+    generate_relationships: bool = True
+    overwrite_existing: bool = False
+    scope_table_ids: list[str] | None = None
+    max_iterations: int = 50
+    query_timeout: int = 10
 
 
 @lru_cache
@@ -93,8 +116,16 @@ class DeepEnrichmentAgent:
         connection_id: UUID,
         *,
         on_progress: Any = None,
+        options: DeepEnrichOptions | None = None,
+        manual_text: str | None = None,
     ) -> dict:
         """Run deep enrichment. Phase 1: explore DB. Phase 2: LLM generates enrichment."""
+        if options is None:
+            options = DeepEnrichOptions()
+
+        # Use query_timeout from options if provided
+        query_timeout = options.query_timeout or self._query_timeout
+
         # Load connection + schema
         async with get_db() as conn:
             connection_repo = ConnectionRepository(conn)
@@ -108,6 +139,41 @@ class DeepEnrichmentAgent:
         if not tables:
             raise ValueError("No schema discovered. Run discovery first.")
 
+        # Filter tables by scope if specified
+        if options.scope_table_ids:
+            scope_ids = set(options.scope_table_ids)
+            tables = [t for t in tables if str(t.id) in scope_ids]
+            if not tables:
+                raise ValueError("No tables match the specified scope.")
+
+        # Check existing enrichment and collect per-column value_guidance
+        existing_enrichment: dict[str, bool] = {}  # table_key -> has enrichment
+        existing_columns: set[str] = set()  # col_key -> has enrichment
+        column_value_guidance: dict[str, str] = {}  # "schema.table.col" -> guidance
+        async with get_db() as conn:
+            repo = EnrichmentRepository(conn)
+            for t in tables:
+                table_key = f"{t.schema_name}.{t.table_name}"
+                if not options.overwrite_existing:
+                    te = await repo.get_table_enrichment(t.id)
+                    if te and te.description:
+                        existing_enrichment[table_key] = True
+                for c in t.columns:
+                    ce = await repo.get_column_enrichment(c.id)
+                    if ce:
+                        if not options.overwrite_existing and ce.description:
+                            existing_columns.add(f"{table_key}.{c.column_name}")
+                        if ce.value_guidance:
+                            column_value_guidance[f"{table_key}.{c.column_name}"] = ce.value_guidance
+
+        # Load software guidance if confirmed
+        sw_guidance_text = ""
+        async with get_db() as conn:
+            repo = EnrichmentRepository(conn)
+            sw_guidance = await repo.get_software_guidance(UUID(connection_id))
+            if sw_guidance and sw_guidance.confirmed:
+                sw_guidance_text = sw_guidance.guidance_text
+
         config = connection_data
         secrets = SecretsManagerClient()
         password = secrets.get_password(connection_id)
@@ -119,10 +185,8 @@ class DeepEnrichmentAgent:
         total_output_tokens = 0
 
         # ── Phase 1: Deterministic exploration ──
-        # Sample every table + distinct values for categorical columns
-        exploration: dict[str, dict] = {}  # table_name -> {sample, distinct_values}
+        exploration: dict[str, dict] = {}
         step = 0
-        total_steps = table_count  # Will grow as we add distinct_values steps
 
         for t in tables:
             table_key = f"{t.schema_name}.{t.table_name}"
@@ -133,7 +197,7 @@ class DeepEnrichmentAgent:
                     "phase": "exploring",
                     "message": f"Sampling {table_key}",
                     "iteration": step,
-                    "max_iterations": total_steps + table_count,  # estimate
+                    "max_iterations": table_count * 2,
                     "tables_analyzed": step,
                     "tables_total": table_count,
                     "input_tokens": total_input_tokens,
@@ -146,7 +210,7 @@ class DeepEnrichmentAgent:
                 sql = _inject_limit(sql, 10, config.db_type)
                 _validate_readonly(sql)
                 sample = await asyncio.wait_for(
-                    connector.execute_query(sql), timeout=self._query_timeout
+                    connector.execute_query(sql), timeout=query_timeout
                 )
             except Exception as exc:
                 logger.warning("Failed to sample %s: %s", table_key, exc)
@@ -170,124 +234,331 @@ class DeepEnrichmentAgent:
                 "distinct_values": {},
             }
 
-            # Identify categorical columns to check distinct values
-            categorical_keywords = {"status", "type", "category", "state", "kind",
-                                    "level", "role", "flag", "code", "mode", "class",
-                                    "group", "tier", "priority", "source", "channel"}
-            for c in t.columns:
-                col_lower = c.column_name.lower()
-                is_categorical = (
-                    any(kw in col_lower for kw in categorical_keywords)
-                    or c.data_type.lower() in ("bit", "boolean", "bool", "tinyint")
-                    or (c.is_foreign_key)
-                )
-                if not is_categorical:
-                    continue
-
+            # ── Cardinality-based categorical detection ──
+            # Build a single query to get distinct count for ALL columns in this table
+            if options.generate_values and t.columns:
                 step += 1
                 if on_progress:
                     await on_progress({
                         "phase": "exploring",
-                        "message": f"Checking distinct values: {table_key}.{c.column_name}",
+                        "message": f"Checking cardinality: {table_key}",
                         "iteration": step,
-                        "max_iterations": step + (table_count - len(exploration)) + 5,
+                        "max_iterations": table_count * 2,
                         "tables_analyzed": len(exploration),
                         "tables_total": table_count,
                         "input_tokens": total_input_tokens,
                         "output_tokens": total_output_tokens,
                     })
 
+                # Batch cardinality check: one query per table
+                count_exprs = ", ".join(
+                    f"COUNT(DISTINCT {c.column_name}) AS {c.column_name}_dcount"
+                    for c in t.columns
+                )
+                cardinality_sql = f"SELECT {count_exprs} FROM {table_key}"
+                cardinality_sql = _inject_limit(cardinality_sql, 1, config.db_type)
+
                 try:
-                    sql = (
-                        f"SELECT {c.column_name}, COUNT(*) as cnt "
-                        f"FROM {table_key} "
-                        f"GROUP BY {c.column_name} "
-                        f"ORDER BY cnt DESC"
+                    _validate_readonly(cardinality_sql)
+                    card_result = await asyncio.wait_for(
+                        connector.execute_query(cardinality_sql), timeout=query_timeout
                     )
-                    sql = _inject_limit(sql, 20, config.db_type)
-                    _validate_readonly(sql)
-                    dist_result = await asyncio.wait_for(
-                        connector.execute_query(sql), timeout=self._query_timeout
-                    )
-                    if isinstance(dist_result, list):
-                        exploration[table_key]["distinct_values"][c.column_name] = [
-                            {k: _truncate_value(v) for k, v in row.items()}
-                            for row in dist_result[:15]
-                        ]
+                    cardinalities: dict[str, int] = {}
+                    if isinstance(card_result, list) and card_result:
+                        row = card_result[0]
+                        if isinstance(row, dict):
+                            for c in t.columns:
+                                key = f"{c.column_name}_dcount"
+                                # Try both lowercase and original case
+                                val = row.get(key) or row.get(key.lower()) or row.get(key.upper())
+                                if val is not None:
+                                    cardinalities[c.column_name] = int(val)
                 except Exception as exc:
-                    logger.warning("Failed distinct values for %s.%s: %s", table_key, c.column_name, exc)
+                    logger.warning("Failed cardinality check for %s: %s", table_key, exc)
+                    cardinalities = {}
 
-        # ── Phase 2: Build schema description and call LLM ──
-        if on_progress:
-            await on_progress({
-                "phase": "analyzing",
-                "message": "AI is analyzing all collected data and generating enrichment...",
-                "iteration": step + 1,
-                "max_iterations": step + 2,
-                "tables_analyzed": table_count,
-                "tables_total": table_count,
-                "input_tokens": total_input_tokens,
-                "output_tokens": total_output_tokens,
-            })
+                # For columns below threshold, fetch distinct values
+                for c in t.columns:
+                    col_count = cardinalities.get(c.column_name)
+                    if col_count is None or col_count >= options.value_threshold:
+                        continue
+                    if col_count == 0:
+                        continue
 
-        # Build schema description
-        schema_lines = []
+                    try:
+                        sql = (
+                            f"SELECT {c.column_name}, COUNT(*) as cnt "
+                            f"FROM {table_key} "
+                            f"GROUP BY {c.column_name} "
+                            f"ORDER BY cnt DESC"
+                        )
+                        sql = _inject_limit(sql, 50, config.db_type)
+                        _validate_readonly(sql)
+                        dist_result = await asyncio.wait_for(
+                            connector.execute_query(sql), timeout=query_timeout
+                        )
+                        if isinstance(dist_result, list):
+                            exploration[table_key]["distinct_values"][c.column_name] = [
+                                {k: _truncate_value(v) for k, v in row.items()}
+                                for row in dist_result[:30]
+                            ]
+                    except Exception as exc:
+                        logger.warning(
+                            "Failed distinct values for %s.%s: %s",
+                            table_key, c.column_name, exc,
+                        )
+
+        # ── Phase 2: Build schema description and call LLM (batched for large schemas) ──
+        #
+        # Dynamically calculate batch size. We estimate output tokens per table
+        # based on: column count, bilingual mode, and number of distinct values
+        # for categorical columns (value_descriptions). Each table gets a "cost"
+        # and we pack tables into batches until the token budget is reached.
+        #
+        MAX_OUTPUT_TOKENS = 64000
+        SAFETY_MARGIN = 0.65  # use 65% — LLM is verbose, JSON overhead, etc.
+        usable_tokens = int(MAX_OUTPUT_TOKENS * SAFETY_MARGIN)
+
+        is_bilingual = options.secondary_language is not None
+        bi = 1.8 if is_bilingual else 1.0  # bilingual multiplier
+
+        # Per-element base token costs (monolingual)
+        BASE_PER_TABLE = 40       # table entry: display_name, description, purpose, tags
+        BASE_PER_COLUMN = 50      # column entry: display_name, description, meaning, synonyms
+        BASE_PER_VALUE = 15       # single value description entry
+        BASE_DB_GLOSSARY = 1500   # database description + glossary terms (first batch)
+
+        # Calculate per-table token cost including its columns and value descriptions
+        table_costs: dict[str, float] = {}
         for t in tables:
-            cols = ", ".join(
-                f"{c.column_name} {c.data_type}"
-                + (" PK" if c.is_primary_key else "")
-                + (" FK" if c.is_foreign_key else "")
-                for c in t.columns
-            )
-            row_est = f" (~{t.row_count_estimate} rows)" if t.row_count_estimate else ""
-            schema_lines.append(f"  {t.schema_name}.{t.table_name}{row_est}: {cols}")
-        schema_description = "\n".join(schema_lines)
+            table_key = f"{t.schema_name}.{t.table_name}"
+            tbl_exp = exploration.get(table_key, {})
 
-        # Build exploration summary — compact JSON
-        exploration_text = json.dumps(exploration, indent=1, default=str)
-        # If too large, truncate sample rows
-        if len(exploration_text) > 30000:
-            for tbl_data in exploration.values():
-                tbl_data["sample_rows"] = tbl_data["sample_rows"][:1]
-            exploration_text = json.dumps(exploration, indent=1, default=str)
+            # Table overhead
+            cost = BASE_PER_TABLE * bi
+            # All columns in this table
+            cost += len(t.columns) * BASE_PER_COLUMN * bi
+            # Value descriptions for categorical columns
+            if options.generate_values:
+                distinct_vals = tbl_exp.get("distinct_values", {})
+                for col_name, vals in distinct_vals.items():
+                    num_vals = len(vals) if isinstance(vals, list) else 0
+                    cost += num_vals * BASE_PER_VALUE * bi
 
-        prompt = DEEP_ENRICHMENT_SYSTEM_PROMPT.format(
-            schema_description=schema_description,
-            exploration_data=exploration_text,
-            total_tables=table_count,
-            total_columns=total_columns,
+            table_costs[table_key] = cost
+
+        total_estimated = sum(table_costs.values()) + BASE_DB_GLOSSARY * bi
+        estimated_batches = max(1, int(total_estimated / usable_tokens) + 1)
+
+        logger.info(
+            "Batch calc: total_estimated=%d tokens, usable=%d/batch, "
+            "bilingual=%s, estimated_batches=%d",
+            int(total_estimated), usable_tokens, is_bilingual, estimated_batches,
         )
 
-        logger.info("Deep enrichment prompt size: %d chars", len(prompt))
+        # Pack tables into batches using first-fit on token budget
+        batch_budget_first = usable_tokens - int(BASE_DB_GLOSSARY * bi)  # first batch reserves for db+glossary
+        batches: list[list] = []
+        current_batch: list = []
+        current_cost = 0.0
+        budget = batch_budget_first
 
-        # Call LLM with periodic progress updates so the UI stays alive
-        llm_task = asyncio.create_task(self._invoke_llm(prompt))
-        elapsed = 0
-        while not llm_task.done():
-            await asyncio.sleep(5)
-            elapsed += 5
+        for t in tables:
+            table_key = f"{t.schema_name}.{t.table_name}"
+            cost = table_costs.get(table_key, BASE_PER_TABLE * bi)
+
+            if current_batch and current_cost + cost > budget:
+                batches.append(current_batch)
+                current_batch = []
+                current_cost = 0.0
+                budget = usable_tokens  # subsequent batches get full budget
+
+            current_batch.append(t)
+            current_cost += cost
+
+        if current_batch:
+            batches.append(current_batch)
+
+        num_batches = len(batches)
+        logger.info(
+            "Deep enrichment: %d tables, %d columns -> %d batch(es)",
+            table_count, total_columns, num_batches,
+        )
+
+        # Merged enrichment result
+        merged: dict = {
+            "database": {},
+            "tables": [],
+            "columns": [],
+            "value_descriptions": [],
+            "glossary": [],
+            "example_queries": [],
+        }
+
+        # Process batches using a queue — if a batch truncates (hits max_tokens),
+        # split it in half and re-queue the halves for retry.
+        batch_queue: list[tuple[list, bool]] = []  # (tables, is_first_batch)
+        for i, b in enumerate(batches):
+            batch_queue.append((b, i == 0))
+
+        completed_batches = 0
+
+        while batch_queue:
+            batch_tables, is_first = batch_queue.pop(0)
+            total_remaining = len(batch_queue)  # remaining after this one
+            current_batch_num = completed_batches + 1
+            total_display = completed_batches + 1 + total_remaining
+            batch_col_count = sum(len(t.columns) for t in batch_tables)
+
             if on_progress:
                 await on_progress({
                     "phase": "analyzing",
-                    "message": f"AI is generating enrichment... ({elapsed}s elapsed)",
-                    "iteration": step + 1,
-                    "max_iterations": step + 2,
+                    "message": f"AI analyzing batch {current_batch_num}/{total_display} "
+                               f"({len(batch_tables)} tables, {batch_col_count} columns)...",
+                    "iteration": step + current_batch_num,
+                    "max_iterations": step + total_display + 1,
                     "tables_analyzed": table_count,
                     "tables_total": table_count,
                     "input_tokens": total_input_tokens,
                     "output_tokens": total_output_tokens,
                 })
-        enrichment, usage = await llm_task
-        total_input_tokens += usage.get("input_tokens", 0)
-        total_output_tokens += usage.get("output_tokens", 0)
 
-        if enrichment is None:
-            logger.error("LLM failed to produce enrichment JSON")
-            return {"error": "LLM failed to produce valid enrichment"}
+            # Build schema description for this batch
+            schema_lines = []
+            for t in batch_tables:
+                cols = ", ".join(
+                    f"{c.column_name} {c.data_type}"
+                    + (" PK" if c.is_primary_key else "")
+                    + (" FK" if c.is_foreign_key else "")
+                    for c in t.columns
+                )
+                row_est = f" (~{t.row_count_estimate} rows)" if t.row_count_estimate else ""
+                schema_lines.append(f"  {t.schema_name}.{t.table_name}{row_est}: {cols}")
+            schema_description = "\n".join(schema_lines)
 
-        # The LLM should return {"enrichment": {...}} or just the enrichment object
-        if "enrichment" in enrichment:
-            enrichment = enrichment["enrichment"]
+            # Build exploration summary for this batch only
+            batch_exploration = {
+                f"{t.schema_name}.{t.table_name}": exploration.get(f"{t.schema_name}.{t.table_name}", {})
+                for t in batch_tables
+            }
+            exploration_text = json.dumps(batch_exploration, indent=1, default=str)
+            if len(exploration_text) > 30000:
+                for tbl_data in batch_exploration.values():
+                    if isinstance(tbl_data, dict):
+                        tbl_data["sample_rows"] = tbl_data.get("sample_rows", [])[:1]
+                exploration_text = json.dumps(batch_exploration, indent=1, default=str)
+
+            # Get manual context for this batch's tables
+            manual_section = ""
+            if manual_text:
+                from src.utils.document_parser import find_relevant_sections
+                table_names = [f"{t.schema_name}.{t.table_name}" for t in batch_tables]
+                manual_section = find_relevant_sections(manual_text, table_names)
+
+            # Only generate database/glossary on first batch
+            batch_options = options
+            if not is_first:
+                batch_options = options.model_copy()
+                batch_options.generate_glossary = False
+
+            # Filter existing columns/tables relevant to this batch
+            batch_table_keys = {f"{t.schema_name}.{t.table_name}" for t in batch_tables}
+            batch_existing_tables = {
+                k: v for k, v in (existing_enrichment or {}).items() if k in batch_table_keys
+            } if not options.overwrite_existing else {}
+            batch_existing_columns = {
+                c for c in (existing_columns or set())
+                if any(c.startswith(tk + ".") for tk in batch_table_keys)
+            } if not options.overwrite_existing else set()
+            batch_value_guidance = {
+                k: v for k, v in (column_value_guidance or {}).items()
+                if any(k.startswith(tk + ".") for tk in batch_table_keys)
+            }
+
+            prompt = build_deep_enrichment_prompt(
+                schema_description=schema_description,
+                exploration_data=exploration_text,
+                total_tables=len(batch_tables),
+                total_columns=batch_col_count,
+                options=batch_options,
+                manual_context=manual_section,
+                existing_tables=batch_existing_tables,
+                existing_columns=batch_existing_columns,
+                column_value_guidance=batch_value_guidance,
+                software_guidance=sw_guidance_text,
+            )
+
+            logger.info(
+                "Batch %d/%d: %d tables, %d cols, prompt %d chars",
+                current_batch_num, total_display, len(batch_tables), batch_col_count, len(prompt),
+            )
+
+            # Call LLM with periodic progress updates
+            llm_task = asyncio.create_task(self._invoke_llm(prompt))
+            elapsed = 0
+            while not llm_task.done():
+                await asyncio.sleep(5)
+                elapsed += 5
+                if on_progress:
+                    await on_progress({
+                        "phase": "analyzing",
+                        "message": f"AI generating batch {current_batch_num}/{total_display}... ({elapsed}s)",
+                        "iteration": step + current_batch_num,
+                        "max_iterations": step + total_display + 1,
+                        "tables_analyzed": table_count,
+                        "tables_total": table_count,
+                        "input_tokens": total_input_tokens,
+                        "output_tokens": total_output_tokens,
+                    })
+            batch_enrichment, usage, truncated = await llm_task
+            total_input_tokens += usage.get("input_tokens", 0)
+            total_output_tokens += usage.get("output_tokens", 0)
+
+            # If truncated and batch has >1 table, split in half and retry
+            if (batch_enrichment is None or truncated) and len(batch_tables) > 1:
+                mid = len(batch_tables) // 2
+                left_half = batch_tables[:mid]
+                right_half = batch_tables[mid:]
+                logger.warning(
+                    "Batch truncated/failed (%d tables, %d cols) — splitting into %d + %d tables",
+                    len(batch_tables), batch_col_count, len(left_half), len(right_half),
+                )
+                # Re-queue both halves; first half inherits is_first flag
+                batch_queue.insert(0, (right_half, False))
+                batch_queue.insert(0, (left_half, is_first))
+                continue
+
+            if batch_enrichment is None:
+                logger.error("LLM failed on batch with %d tables (not splittable)", len(batch_tables))
+                continue
+
+            if "enrichment" in batch_enrichment:
+                batch_enrichment = batch_enrichment["enrichment"]
+
+            # Merge results
+            if is_first and batch_enrichment.get("database"):
+                merged["database"] = batch_enrichment["database"]
+            merged["tables"].extend(batch_enrichment.get("tables", []))
+            merged["columns"].extend(batch_enrichment.get("columns", []))
+            merged["value_descriptions"].extend(batch_enrichment.get("value_descriptions", []))
+            if is_first:
+                merged["glossary"].extend(batch_enrichment.get("glossary", []))
+
+            completed_batches += 1
+
+        enrichment = merged
+
+        # Filter enrichment based on generate options
+        if not options.generate_tables:
+            enrichment.pop("tables", None)
+        if not options.generate_columns:
+            enrichment.pop("columns", None)
+        if not options.generate_values:
+            enrichment.pop("value_descriptions", None)
+        if not options.generate_glossary:
+            enrichment.pop("glossary", None)
+        if not options.generate_examples:
+            enrichment.pop("example_queries", None)
 
         # Save to DB
         await self._save_enrichment(connection_id, enrichment, tables)
@@ -306,11 +577,16 @@ class DeepEnrichmentAgent:
 
         return enrichment
 
-    async def _invoke_llm(self, prompt: str) -> tuple[dict | None, dict]:
-        """Invoke Opus 4.5 with streaming to avoid read timeouts. Returns (parsed, usage)."""
+    async def _invoke_llm(self, prompt: str) -> tuple[dict | None, dict, bool]:
+        """Invoke Opus 4.5 with streaming. Returns (parsed, usage, truncated).
+
+        truncated is True when output_tokens hit max_tokens (64000),
+        meaning the response was cut off and JSON is likely incomplete.
+        """
+        max_tokens = 64000
         body = {
             "anthropic_version": "bedrock-2023-05-31",
-            "max_tokens": 64000,
+            "max_tokens": max_tokens,
             "messages": [{"role": "user", "content": [{"type": "text", "text": prompt}]}],
         }
 
@@ -321,7 +597,6 @@ class DeepEnrichmentAgent:
                 accept="application/json",
                 body=json.dumps(body),
             )
-            # Collect streamed chunks
             text_parts: list[str] = []
             usage: dict = {}
             for event in response["body"]:
@@ -332,7 +607,6 @@ class DeepEnrichmentAgent:
                     if delta.get("type") == "text_delta":
                         text_parts.append(delta["text"])
                 elif chunk_type == "message_delta":
-                    stop = chunk.get("delta", {}).get("stop_reason", "unknown")
                     usage.update(chunk.get("usage", {}))
                 elif chunk_type == "message_start":
                     msg = chunk.get("message", {})
@@ -348,16 +622,20 @@ class DeepEnrichmentAgent:
 
         try:
             text, usage = await asyncio.to_thread(_call_streaming)
+            output_tokens = usage.get("output_tokens", 0)
+            truncated = output_tokens >= max_tokens
+            if truncated:
+                logger.warning("LLM output truncated at %d tokens", output_tokens)
             parsed = self._parse_json(text)
             if parsed is None:
                 logger.warning("Failed to parse LLM JSON (first 500 chars): %s", text[:500])
-            return parsed, usage
+            return parsed, usage, truncated
         except Exception as exc:
             logger.exception("LLM invocation failed")
             exc_str = str(exc)
             if "AccessDeniedException" in exc_str or "UnrecognizedClientException" in exc_str:
                 raise
-            return None, {}
+            return None, {}, False
 
     def _parse_json(self, text: str) -> dict | None:
         """Parse JSON from LLM response."""
@@ -369,7 +647,6 @@ class DeepEnrichmentAgent:
         try:
             return json.loads(text)
         except json.JSONDecodeError:
-            # Try to find JSON object in text
             match = re.search(r"\{.*\}", text, re.DOTALL)
             if match:
                 try:
@@ -382,7 +659,6 @@ class DeepEnrichmentAgent:
         self, connection_id: UUID, enrichment: dict, tables: list
     ) -> None:
         """Persist the agent's enrichment output to the metadata DB."""
-        # Build lookup maps
         table_map: dict[str, Any] = {}
         column_map: dict[str, Any] = {}
         for t in tables:
@@ -470,16 +746,7 @@ class DeepEnrichmentAgent:
                     ),
                 )
 
-            # Example queries
-            for eq in enrichment.get("example_queries", []):
-                await repo.create_example_query(
-                    connection_id,
-                    ExampleQueryCreate(
-                        question=eq["question"],
-                        sql_query=eq["sql_query"],
-                        description=eq.get("description"),
-                    ),
-                )
+            # Example queries — skipped (user-created only)
 
         logger.info(
             "Deep enrichment saved: %d tables, %d columns, %d glossary, %d examples",

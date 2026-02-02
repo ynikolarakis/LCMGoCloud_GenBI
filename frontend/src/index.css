@@ -1,1 +1,173 @@
 @import "tailwindcss";
+
+/* Markdown table styling for chat messages */
+.chat-markdown h3 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-top: 1rem;
+  margin-bottom: 0.25rem;
+  color: #1f2937;
+}
+
+.chat-markdown h3:first-child {
+  margin-top: 0;
+}
+
+.chat-markdown ul {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+  list-style-type: disc;
+}
+
+.chat-markdown li {
+  margin: 0.15rem 0;
+  font-size: 0.875rem;
+}
+
+.chat-markdown p {
+  margin: 0.25rem 0;
+  font-size: 0.875rem;
+}
+
+.chat-markdown strong {
+  font-weight: 600;
+}
+
+.chat-markdown hr {
+  margin: 0.5rem 0;
+  border-color: #e5e7eb;
+}
+
+.chat-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin: 0.5rem 0;
+}
+
+.chat-markdown thead th {
+  background-color: #f3f4f6;
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid #d1d5db;
+  white-space: nowrap;
+}
+
+.chat-markdown tbody td {
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid #e5e7eb;
+}
+
+.chat-markdown tbody tr:hover {
+  background-color: #f9fafb;
+}
+
+/* Right-align numeric cells */
+.chat-markdown tbody td:not(:first-child) {
+  text-align: right;
+}
+
+.chat-markdown thead th:not(:first-child) {
+  text-align: right;
+}
+
+/* POC dark theme markdown */
+.poc-markdown h3 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-top: 1rem;
+  margin-bottom: 0.25rem;
+  color: #e2e8f0;
+}
+
+.poc-markdown h3:first-child {
+  margin-top: 0;
+}
+
+.poc-markdown ul {
+  margin: 0.25rem 0;
+  padding-left: 1.25rem;
+  list-style-type: disc;
+}
+
+.poc-markdown li {
+  margin: 0.15rem 0;
+  font-size: 0.875rem;
+  color: #cbd5e1;
+}
+
+.poc-markdown li::marker {
+  color: #6366f1;
+}
+
+.poc-markdown p {
+  margin: 0.25rem 0;
+  font-size: 0.875rem;
+}
+
+.poc-markdown strong {
+  font-weight: 600;
+  color: #e2e8f0;
+}
+
+.poc-markdown hr {
+  margin: 0.5rem 0;
+  border-color: rgba(255, 255, 255, 0.06);
+}
+
+.poc-markdown table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.8rem;
+  margin: 0.5rem 0;
+}
+
+.poc-markdown thead th {
+  background-color: rgba(255, 255, 255, 0.05);
+  padding: 0.4rem 0.6rem;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+  white-space: nowrap;
+  color: #e2e8f0;
+}
+
+.poc-markdown tbody td {
+  padding: 0.3rem 0.6rem;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+  color: #94a3b8;
+}
+
+.poc-markdown tbody tr:hover {
+  background-color: rgba(255, 255, 255, 0.02);
+}
+
+.poc-markdown tbody td:not(:first-child) {
+  text-align: right;
+}
+
+.poc-markdown thead th:not(:first-child) {
+  text-align: right;
+}
+
+.poc-markdown code {
+  background-color: rgba(255, 255, 255, 0.06);
+  padding: 0.1rem 0.3rem;
+  border-radius: 0.25rem;
+  font-size: 0.8rem;
+  color: #a5b4fc;
+}
+
+.poc-markdown pre {
+  background-color: rgba(0, 0, 0, 0.3);
+  padding: 0.75rem;
+  border-radius: 0.5rem;
+  overflow-x: auto;
+}
+
+.poc-markdown pre code {
+  background: none;
+  padding: 0;
+  color: #86efac;
+}

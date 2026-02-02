@@ -20,9 +20,12 @@ export function LoginPage() {
     <div className="flex min-h-screen items-center justify-center bg-gray-50 px-4">
       <div className="w-full max-w-sm">
         <div className="rounded-lg border bg-white p-8 shadow-sm">
-          <h1 className="mb-1 text-center text-xl font-semibold text-gray-900">
-            GenBI Platform
-          </h1>
+          <div className="mb-1 flex items-center justify-center gap-2">
+            <img src="/logo_en.png" alt="LCM Go Cloud" className="h-10 w-10 object-contain" />
+            <h1 className="text-center text-xl font-semibold text-gray-900">
+              GenBI Platform
+            </h1>
+          </div>
           <p className="mb-6 text-center text-sm text-gray-500">
             Sign in to your account
           </p>

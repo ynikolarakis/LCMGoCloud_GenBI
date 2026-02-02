@@ -14,6 +14,10 @@ from src.api.discovery import router as discovery_router
 from src.api.deep_enrichment import router as deep_enrichment_router
 from src.api.enrichment import router as enrichment_router
 from src.api.query import router as query_router
+from src.api.query_instructions import router as query_instructions_router
+from src.api.relationships import router as relationships_router
+from src.api.chat_history import router as chat_history_router
+from src.api.poc import admin_router as poc_admin_router, public_router as poc_public_router
 from src.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -105,6 +109,11 @@ app.include_router(discovery_router, dependencies=_auth)
 app.include_router(deep_enrichment_router, dependencies=_auth)
 app.include_router(enrichment_router, dependencies=_auth)
 app.include_router(query_router, dependencies=_auth)
+app.include_router(query_instructions_router, dependencies=_auth)
+app.include_router(relationships_router, dependencies=_auth)
+app.include_router(chat_history_router, dependencies=_auth)
+app.include_router(poc_admin_router, dependencies=_auth)
+app.include_router(poc_public_router)  # POC public endpoints — no Cognito auth
 
 
 @app.get("/api/v1/health")

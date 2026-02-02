@@ -1,4 +1,13 @@
 /** Dashboard state — pinned charts with backend persistence. */
+function uuid() {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+        return crypto.randomUUID();
+    return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+        const r = (Math.random() * 16) | 0;
+        return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+    });
+}
 import { create } from "zustand";
 import { fetchDashboards, createDashboard as apiCreateDashboard, addDashboardCard, removeDashboardCard, deleteDashboard as apiDeleteDashboard, } from "@/services/api";
 function cardFromBackend(card) {
@@ -18,6 +27,10 @@ function cardFromBackend(card) {
             row_count: card.row_count,
             execution_time_ms: card.execution_time_ms,
             follow_up_questions: [],
+            column_labels: {},
+            input_tokens: 0,
+            output_tokens: 0,
+            model_used: '',
             created_at: card.pinned_at,
         },
         pinnedAt: new Date(card.pinned_at).getTime(),
@@ -53,7 +66,7 @@ export const useDashboardStore = create((set, get) => ({
     },
     pinChart: (title, chartType, response) => {
         const { dashboardId } = get();
-        const localId = crypto.randomUUID();
+        const localId = uuid();
         // Add locally immediately
         set((s) => ({
             cards: [
