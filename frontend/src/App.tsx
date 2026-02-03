@@ -37,6 +37,11 @@ const PocChatPage = lazy(() =>
     default: m.PocChatPage,
   })),
 );
+const LabPage = lazy(() =>
+  import("@/pages/LabPage").then((m) => ({
+    default: m.LabPage,
+  })),
+);
 
 const queryClient = new QueryClient();
 
@@ -73,6 +78,9 @@ function NavBar() {
           </NavLink>
           <NavLink to="/dashboard" className={linkClass}>
             Dashboard
+          </NavLink>
+          <NavLink to="/lab" className={linkClass}>
+            Lab
           </NavLink>
         </nav>
         {authRequired && user && (
@@ -147,6 +155,7 @@ function AuthenticatedRoutes() {
             <Route path="/chat" element={<ChatPage />} />
             <Route path="/advanced-chat" element={<AdvancedChatPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
+            <Route path="/lab" element={<LabPage />} />
           </Routes>
         </Suspense>
       </main>

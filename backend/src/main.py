@@ -13,6 +13,7 @@ from src.api.dashboard import router as dashboard_router
 from src.api.discovery import router as discovery_router
 from src.api.deep_enrichment import router as deep_enrichment_router
 from src.api.enrichment import router as enrichment_router
+from src.api.lab import router as lab_router
 from src.api.query import router as query_router
 from src.api.query_instructions import router as query_instructions_router
 from src.api.relationships import router as relationships_router
@@ -108,6 +109,7 @@ app.include_router(dashboard_router, dependencies=_auth)
 app.include_router(discovery_router, dependencies=_auth)
 app.include_router(deep_enrichment_router, dependencies=_auth)
 app.include_router(enrichment_router, dependencies=_auth)
+app.include_router(lab_router, prefix="/api/v1", dependencies=_auth)
 app.include_router(query_router, dependencies=_auth)
 app.include_router(query_instructions_router, dependencies=_auth)
 app.include_router(relationships_router, dependencies=_auth)

@@ -68,6 +68,17 @@ class Settings(BaseSettings):
     poc_jwt_expire_hours: int = 720  # 30 days
     poc_logo_dir: str = "/var/www/genbi/poc-logos"
 
+    # Lab / Experimental optimization settings
+    lab_max_tables: int = 10  # Max tables to include in optimized context
+    lab_min_relevance_score: float = 2.0  # Skip tables below this score
+    lab_max_value_descriptions: int = 10  # Limit value descriptions per column
+    lab_prompt_cache_ttl: int = 3600  # 1 hour TTL for prompt caching
+    lab_enable_caching: bool = True  # Enable prompt caching
+    lab_max_glossary_terms: int = 5  # Limit glossary terms in context
+    lab_max_example_queries: int = 3  # Limit example queries in context
+    lab_max_column_desc_chars: int = 100  # Truncate column descriptions
+    lab_skip_audit_columns: bool = True  # Skip created_at, updated_at, etc.
+
     model_config = {"env_prefix": "GENBI_", "env_file": ".env", "extra": "ignore"}
 
     def get_metadata_db_url(self) -> str:

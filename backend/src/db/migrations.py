@@ -389,4 +389,53 @@ MIGRATIONS: list[dict[str, str]] = [
                 ON poc_instances(poc_connection_id);
         """,
     },
+    {
+        "version": "020",
+        "description": "Create lab_verified_queries table for few-shot learning",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS lab_verified_queries (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                question TEXT NOT NULL,
+                sql_query TEXT NOT NULL,
+                explanation TEXT,
+                tables_used JSONB NOT NULL DEFAULT '[]'::jsonb,
+                row_count INTEGER DEFAULT 0,
+                execution_time_ms INTEGER DEFAULT 0,
+                success_count INTEGER NOT NULL DEFAULT 1,
+                failure_count INTEGER NOT NULL DEFAULT 0,
+                embedding JSONB,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                last_used_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lab_verified_conn
+                ON lab_verified_queries(connection_id);
+            CREATE INDEX IF NOT EXISTS idx_lab_verified_success
+                ON lab_verified_queries(connection_id, success_count DESC);
+        """,
+    },
+    {
+        "version": "021",
+        "description": "Create lab_schema_embeddings table for semantic search",
+        "sql": """
+            CREATE TABLE IF NOT EXISTS lab_schema_embeddings (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                table_id UUID REFERENCES discovered_tables(id) ON DELETE CASCADE,
+                column_id UUID REFERENCES discovered_columns(id) ON DELETE CASCADE,
+                entity_type VARCHAR(20) NOT NULL,
+                entity_name VARCHAR(255) NOT NULL,
+                text_content TEXT NOT NULL,
+                embedding JSONB NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(connection_id, entity_type, entity_name)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_lab_embed_conn
+                ON lab_schema_embeddings(connection_id);
+            CREATE INDEX IF NOT EXISTS idx_lab_embed_type
+                ON lab_schema_embeddings(connection_id, entity_type);
+        """,
+    },
 ]
