@@ -38,9 +38,63 @@ export const fetchFavorites = (connectionId) => client
     .then((r) => r.data);
 export const toggleFavorite = (queryId) => client.post(`/query/${queryId}/favorite`).then((r) => r.data);
 export const deleteQuery = (queryId) => client.delete(`/query/${queryId}`);
-export const askMultiModel = (connectionId, body) => client
-    .post(`/connections/${connectionId}/query/multi`, body, { timeout: 300000 })
-    .then((r) => r.data);
+export const askMultiModelStream = async (connectionId, body, callbacks) => {
+    const baseURL = client.defaults.baseURL || "/api/v1";
+    const res = await fetch(`${baseURL}/connections/${connectionId}/query/multi`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+    });
+    if (!res.ok || !res.body) {
+        throw new Error(`Multi-model request failed: ${res.status}`);
+    }
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+    let eventType = "";
+    const processLines = (lines) => {
+        for (const line of lines) {
+            if (line.startsWith("event: ")) {
+                eventType = line.slice(7).trim();
+            }
+            else if (line.startsWith("data: ") && eventType) {
+                try {
+                    const data = JSON.parse(line.slice(6));
+                    if (eventType === "model_start") {
+                        callbacks.onModelStart?.(data.model_key, data.index, data.total);
+                    }
+                    else if (eventType === "model_result") {
+                        callbacks.onModelResult(data.model_key, data.result);
+                    }
+                    else if (eventType === "model_error") {
+                        callbacks.onModelError(data.model_key, data.error);
+                    }
+                    else if (eventType === "done") {
+                        callbacks.onDone();
+                    }
+                }
+                catch { /* skip malformed */ }
+                eventType = "";
+            }
+            else if (line === "") {
+                eventType = "";
+            }
+        }
+    };
+    while (true) {
+        const { done, value } = await reader.read();
+        if (done)
+            break;
+        buffer += decoder.decode(value, { stream: true });
+        const lines = buffer.split("\n");
+        buffer = lines.pop() || "";
+        processLines(lines);
+    }
+    // Process any remaining data in the buffer
+    if (buffer.trim()) {
+        processLines(buffer.split("\n"));
+    }
+};
 export const compareModels = (connectionId, body) => client
     .post(`/connections/${connectionId}/query/compare`, body, { timeout: 120000 })
     .then((r) => r.data);

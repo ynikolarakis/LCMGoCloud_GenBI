@@ -4,7 +4,7 @@ import { create } from "zustand";
 import type { QueryResponse } from "@/types/api";
 import type { CompareResponse } from "@/services/api";
 import {
-  askMultiModel,
+  askMultiModelStream,
   compareModels,
   fetchConversations,
   createConversation,
@@ -58,6 +58,8 @@ interface AdvancedChatState {
   isComparing: boolean;
   history: HistoryEntry[];
   activeHistoryId: string | null;
+  runningModel: string | null;
+  completedModels: string[];
 
   setConnectionId: (id: string) => void;
   submitQuestion: (connectionId: string, question: string) => Promise<void>;
@@ -80,6 +82,8 @@ export const useAdvancedChatStore = create<AdvancedChatState>((set, get) => ({
   isComparing: false,
   history: [],
   activeHistoryId: null,
+  runningModel: null,
+  completedModels: [],
 
   setConnectionId: (id) => {
     set({ connectionId: id });
@@ -87,55 +91,78 @@ export const useAdvancedChatStore = create<AdvancedChatState>((set, get) => ({
   },
 
   submitQuestion: async (connectionId, question) => {
-    set({ question, results: {}, isLoading: true, comparison: null, activeTab: MODEL_KEYS[0], activeHistoryId: null });
+    const entryId = uid();
+    const entry: HistoryEntry = {
+      id: entryId,
+      question,
+      results: {},
+      comparison: null,
+      timestamp: Date.now(),
+    };
+    set({
+      question,
+      results: {},
+      isLoading: true,
+      comparison: null,
+      activeTab: MODEL_KEYS[0],
+      activeHistoryId: entryId,
+      runningModel: null,
+      completedModels: [],
+      history: [entry, ...get().history],
+    });
     try {
-      const data = await askMultiModel(connectionId, { question });
-      const mapped: Record<string, ModelResult> = {};
-      for (const [key, val] of Object.entries(data.results)) {
-        if ("error" in val && typeof val.error === "string" && !("sql" in val && "columns" in val)) {
-          mapped[key] = { error: val.error as string };
-        } else {
-          mapped[key] = { response: val as QueryResponse };
-        }
-      }
-      const entryId = uid();
-      const entry: HistoryEntry = {
-        id: entryId,
-        question,
-        results: mapped,
-        comparison: null,
-        timestamp: Date.now(),
-      };
-      set((s) => ({
-        results: mapped,
-        history: [entry, ...s.history],
-        activeHistoryId: entryId,
-      }));
-
-      // Persist to backend
-      createConversation(connectionId, {
-        id: entryId,
-        title: question.slice(0, 80),
-        chat_type: "advanced",
-      }).then(() => {
-        // Save a single message with all results as response_data
-        const msgId = uid();
-        addMessage(entryId, {
-          id: msgId,
-          role: "user",
-          content: question,
-          response_data: { results: mapped, comparison: null } as unknown as Record<string, unknown>,
-        }).catch(() => {});
-      }).catch(() => {});
+      await askMultiModelStream(connectionId, { question }, {
+        onModelStart: (modelKey) => {
+          set((s) => ({ runningModel: modelKey, completedModels: s.completedModels }));
+        },
+        onModelResult: (modelKey, result) => {
+          set((s) => {
+            const updated = { ...s.results, [modelKey]: { response: result } };
+            const history = s.history.map((h) =>
+              h.id === entryId ? { ...h, results: updated } : h,
+            );
+            const activeTab = Object.keys(s.results).length === 0 ? modelKey : s.activeTab;
+            return { results: updated, history, activeTab, completedModels: [...s.completedModels, modelKey] };
+          });
+        },
+        onModelError: (modelKey, error) => {
+          set((s) => {
+            const updated = { ...s.results, [modelKey]: { error } };
+            const history = s.history.map((h) =>
+              h.id === entryId ? { ...h, results: updated } : h,
+            );
+            return { results: updated, history, completedModels: [...s.completedModels, modelKey] };
+          });
+        },
+        onDone: () => {
+          // Persist to backend
+          const mapped = get().results;
+          createConversation(connectionId, {
+            id: entryId,
+            title: question.slice(0, 80),
+            chat_type: "advanced",
+          }).then(() => {
+            const msgId = uid();
+            addMessage(entryId, {
+              id: msgId,
+              role: "user",
+              content: question,
+              response_data: { results: mapped, comparison: null } as unknown as Record<string, unknown>,
+            }).catch(() => {});
+          }).catch(() => {});
+        },
+      });
     } catch (e) {
       const msg = e instanceof Error ? e.message : "Request failed";
       const errResults: Record<string, ModelResult> = {};
       for (const key of MODEL_KEYS) {
-        errResults[key] = { error: msg };
+        if (!get().results[key]) {
+          errResults[key] = { error: msg };
+        }
       }
-      set({ results: errResults });
+      set((s) => ({ results: { ...s.results, ...errResults } }));
     } finally {
-      set({ isLoading: false });
+      set({ isLoading: false, runningModel: null });
     }
   },
 
@@ -237,7 +264,7 @@ export const useAdvancedChatStore = create<AdvancedChatState>((set, get) => ({
     apiDeleteConversation(id).catch(() => {});
   },
 
-  clear: () => set({ question: "", results: {}, comparison: null, isLoading: false, isComparing: false, activeTab: MODEL_KEYS[0], activeHistoryId: null }),
+  clear: () => set({ question: "", results: {}, comparison: null, isLoading: false, isComparing: false, activeTab: MODEL_KEYS[0], activeHistoryId: null, runningModel: null, completedModels: [] }),
 
   clearHistory: () => {
     const { connectionId } = get();

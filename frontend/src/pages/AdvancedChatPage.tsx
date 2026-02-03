@@ -28,6 +28,7 @@ export function AdvancedChatPage() {
     loadHistoryEntry,
     deleteHistoryEntry,
     clearHistory,
+    completedModels,
   } = useAdvancedChatStore();
 
   const [input, setInput] = useState("");
@@ -116,7 +117,9 @@ export function AdvancedChatPage() {
           disabled={!connectionId || !input.trim() || isLoading}
           className="rounded bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
         >
-          {isLoading ? "Running 6 models..." : "Ask All Models"}
+          {isLoading
+            ? `${completedModels.length}/${MODEL_KEYS.length} models done...`
+            : "Ask All Models"}
         </button>
       </form>
 
@@ -146,23 +149,32 @@ export function AdvancedChatPage() {
                   const result = results[tab];
                   const hasError = result?.error;
                   const hasResponse = result?.response;
+                  const isRunning = isLoading && !result && tab !== "comparison";
+                  const isQueued = false;
 
                   return (
                     <button
                       key={tab}
                       onClick={() => setActiveTab(tab)}
-                      className={`whitespace-nowrap rounded-t px-3 py-1.5 text-xs font-medium transition-colors ${
+                      className={`flex items-center gap-1.5 whitespace-nowrap rounded-t px-3 py-1.5 text-xs font-medium transition-colors ${
                         isActive
                           ? "border-b-2 border-blue-600 bg-white text-blue-700"
                           : "text-gray-500 hover:bg-gray-100 hover:text-gray-700"
                       }`}
                     >
                       {label}
-                      {hasError && <span className="ml-1 text-red-500">!</span>}
-                      {hasResponse && !hasError && <span className="ml-1 text-green-500">&#10003;</span>}
+                      {isRunning && <span className="inline-block h-3 w-3 animate-spin rounded-full border-2 border-blue-300 border-t-blue-600" />}
+                      {isQueued && <span className="text-gray-300">&#9679;</span>}
+                      {hasError && <span className="text-red-500">!</span>}
+                      {hasResponse && !hasError && <span className="text-green-500">&#10003;</span>}
                     </button>
                   );
                 })}
+                {isLoading && (
+                  <span className="ml-auto flex items-center gap-1 px-2 text-xs text-gray-400">
+                    {completedModels.length}/{MODEL_KEYS.length} done
+                  </span>
+                )}
               </div>
 
               {/* Tab content */}
@@ -171,7 +183,9 @@ export function AdvancedChatPage() {
                   <div className="flex items-center justify-center py-20">
                     <div className="text-center">
                       <div className="mb-2 h-8 w-8 animate-spin rounded-full border-4 border-blue-200 border-t-blue-600 mx-auto" />
-                      <p className="text-sm text-gray-500">Running question against all 6 models...</p>
+                      <p className="text-sm text-gray-500">
+                        Running all {MODEL_KEYS.length} models in parallel... ({completedModels.length}/{MODEL_KEYS.length} done)
+                      </p>
                     </div>
                   </div>
                 )}
@@ -288,8 +302,19 @@ function ModelTabContent({
   modelKey: string;
   result?: { response?: import("@/types/api").QueryResponse; error?: string };
 }) {
+  const { isLoading } = useAdvancedChatStore();
+  const isRunning = isLoading && !result;
+
   if (!result) {
-    return <p className="text-sm text-gray-400">Waiting for results...</p>;
+    if (isRunning) {
+      return (
+        <div className="flex items-center gap-3 py-8">
+          <div className="h-5 w-5 animate-spin rounded-full border-2 border-blue-300 border-t-blue-600" />
+          <p className="text-sm text-blue-600">Running {MODEL_LABELS[modelKey as ModelKey] ?? modelKey}...</p>
+        </div>
+      );
+    }
+    return <p className="text-sm text-gray-400">No results yet</p>;
   }
 
   if (result.error) {

@@ -108,12 +108,82 @@ async def delete_query(query_id: UUID):
 
 @router.post(
     "/api/v1/connections/{connection_id}/query/multi",
-    response_model=MultiModelResponse,
-    summary="Run a question against all models in parallel",
+    summary="Run a question against all models in parallel (SSE stream)",
 )
 async def ask_multi(connection_id: UUID, body: MultiModelRequest):
+    """Stream each model result as SSE events as they complete."""
+    import asyncio
+    import time
+    from src.services.query.engine import MODEL_MAP
+
     engine = QueryEngine()
-    return await engine.ask_multi(connection_id, body)
+    result_queue: asyncio.Queue = asyncio.Queue()
+
+    async def _run_model(model_key: str, index: int) -> None:
+        await result_queue.put(("start", model_key, index))
+        start = time.monotonic()
+        try:
+            req = QueryRequest(
+                question=body.question,
+                conversation_id=body.conversation_id,
+                model_id=model_key,
+            )
+            result = await engine.ask(connection_id, req)
+            elapsed_ms = int((time.monotonic() - start) * 1000)
+            if isinstance(result, QueryError):
+                await result_queue.put(("error", model_key, result))
+            else:
+                result.execution_time_ms = elapsed_ms
+                await result_queue.put(("result", model_key, result))
+        except Exception as exc:
+            await result_queue.put(("error", model_key, str(exc)))
+
+    async def event_stream():
+        def sse(event: str, data: dict) -> str:
+            return f"event: {event}\ndata: {json.dumps(data)}\n\n"
+
+        model_keys = list(MODEL_MAP.keys())
+        total = len(model_keys)
+        completed = 0
+
+        yield sse("status", {"phase": "started", "total": total, "question": body.question})
+
+        # Run all models in parallel — results stream as each completes
+        tasks = [asyncio.create_task(_run_model(k, i)) for i, k in enumerate(model_keys)]
+
+        while completed < total:
+            try:
+                item = await asyncio.wait_for(result_queue.get(), timeout=8)
+                kind, model_key, data = item
+                if kind == "start":
+                    yield sse("model_start", {"model_key": model_key, "index": data, "total": total})
+                elif kind == "result":
+                    completed += 1
+                    yield sse("model_result", {"model_key": model_key, "result": data.model_dump(mode="json")})
+                elif kind == "error":
+                    completed += 1
+                    if isinstance(data, QueryError):
+                        yield sse("model_error", {"model_key": model_key, "error": data.error, "error_type": data.error_type})
+                    else:
+                        yield sse("model_error", {"model_key": model_key, "error": str(data), "error_type": "exception"})
+            except asyncio.TimeoutError:
+                yield sse("keepalive", {"completed": completed, "total": total})
+
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+
+        yield sse("done", {"total": completed})
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @router.post(

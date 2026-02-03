@@ -429,10 +429,14 @@ class QueryEngine:
         return await asyncio.to_thread(_call)
 
     # Per-model pricing (USD per 1K tokens) — input / output
+    # Source: https://aws.amazon.com/bedrock/pricing/ (eu-central-1)
+    # Anthropic models use regional endpoints with 10% premium over global.
+    # Global: Opus $5/$25, Sonnet $3/$15, Haiku $1/$5 per MTok.
+    # Regional (eu-central-1): +10% → Opus $5.5/$27.5, Sonnet $3.3/$16.5, Haiku $1.1/$5.5 per MTok.
     _MODEL_PRICING: dict[str, tuple[float, float]] = {
-        "opus": (0.015, 0.075),
-        "sonnet": (0.003, 0.015),
-        "haiku": (0.0008, 0.004),
+        "opus": (0.0055, 0.0275),
+        "sonnet": (0.0033, 0.0165),
+        "haiku": (0.0011, 0.0055),
         "llama": (0.00015, 0.00015),
         "pixtral": (0.002, 0.006),
         "nova-pro": (0.0008, 0.0032),
