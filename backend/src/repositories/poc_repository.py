@@ -96,7 +96,7 @@ class PocRepository:
             poc_connection_id=UUID(str(row["poc_connection_id"])),
             customer_name=row["customer_name"],
             logo_path=row.get("logo_path"),
-            password_hash=row["password_hash"],
+            password_hash=row.get("password_hash"),  # Can be None (platform auth)
             model_id=row["model_id"],
             is_active=row["is_active"],
             created_at=row["created_at"],

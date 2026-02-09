@@ -39,9 +39,19 @@ import type {
 
 const client = axios.create({ baseURL: "/api/v1" });
 
-// Attach Cognito JWT token to all requests when available.
+// Attach JWT token to all requests when available.
+// Supports both local auth (stored token) and Cognito (session token).
 client.interceptors.request.use(async (config) => {
   try {
+    // First, try local auth token
+    const { getStoredToken } = await import("@/services/localAuth");
+    const localToken = getStoredToken();
+    if (localToken) {
+      config.headers.Authorization = `Bearer ${localToken}`;
+      return config;
+    }
+
+    // Fall back to Cognito token
     const { getCurrentSession } = await import("@/services/auth");
     const user = await getCurrentSession();
     if (user?.idToken) {
@@ -135,9 +145,10 @@ export const askMultiModelStream = async (
   callbacks: MultiModelCallbacks,
 ): Promise<void> => {
   const baseURL = client.defaults.baseURL || "/api/v1";
+  const headers = await getAuthHeaders();
   const res = await fetch(`${baseURL}/connections/${connectionId}/query/multi`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -414,9 +425,10 @@ export async function bulkGenerateValueDescriptions(
   connectionId: string,
   onProgress?: (p: BulkValueGenProgress) => void,
 ): Promise<BulkValueGenResult> {
+  const headers = await getAuthHeaders();
   const response = await fetch(
     `/api/v1/connections/${connectionId}/values/bulk-ai-generate?language=el`,
-    { method: "POST" },
+    { method: "POST", headers },
   );
 
   if (!response.ok || !response.body) {
@@ -599,6 +611,11 @@ export const startDeepEnrich = (
     )
     .then((r) => r.data);
 
+export const pollDeepEnrichStatus = (jobId: string) =>
+  client
+    .get(`/enrichment/deep-enrich/${jobId}/status`, { params: { t: Date.now() } })
+    .then((r) => r.data);
+
 export const uploadManual = (connectionId: string, file: File) => {
   const form = new FormData();
   form.append("file", file);
@@ -636,8 +653,10 @@ export async function streamDeepEnrich(
   jobId: string,
   callbacks: DeepEnrichStreamCallbacks,
 ): Promise<void> {
+  const headers = await getAuthHeaders();
   const response = await fetch(
     `/api/v1/enrichment/deep-enrich/${jobId}/stream`,
+    { headers },
   );
 
   if (!response.ok || !response.body) {
@@ -676,6 +695,27 @@ export async function streamDeepEnrich(
   }
 }
 
+// Helper to get auth headers for fetch requests
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  try {
+    const { getStoredToken } = await import("@/services/localAuth");
+    const localToken = getStoredToken();
+    if (localToken) {
+      headers.Authorization = `Bearer ${localToken}`;
+      return headers;
+    }
+    const { getCurrentSession } = await import("@/services/auth");
+    const user = await getCurrentSession();
+    if (user?.idToken) {
+      headers.Authorization = `Bearer ${user.idToken}`;
+    }
+  } catch {
+    // No auth
+  }
+  return headers;
+}
+
 // Streaming query
 export interface StreamCallbacks {
   onStatus?: (phase: string, message: string, sql?: string) => void;
@@ -688,9 +728,10 @@ export async function askQuestionStream(
   body: QueryRequest,
   callbacks: StreamCallbacks,
 ): Promise<void> {
+  const headers = await getAuthHeaders();
   const response = await fetch(`/api/v1/connections/${connectionId}/query/stream`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
 
@@ -745,3 +786,6 @@ export async function askQuestionStream(
     throw new Error("Stream ended without result");
   }
 }
+
+// Export client for use by other services (admin, localAuth)
+export default client;

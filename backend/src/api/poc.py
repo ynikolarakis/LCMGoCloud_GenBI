@@ -1,79 +1,88 @@
-"""API routes for POC sharing feature."""
+"""API routes for POC sharing feature.
+
+POC access is now controlled via platform auth:
+- Admins can access any POC
+- Users in a POC's user group can access that POC
+- Unauthenticated users are redirected to login
+"""
 
 from __future__ import annotations
 
 import json
 import logging
-import time
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from src.config import get_settings
 from src.db.session import get_db
 from src.models.poc import (
-    PocAuthRequest,
-    PocAuthResponse,
+    PocAccessResponse,
     PocCreateResponse,
     PocInfoResponse,
     PocListItem,
 )
 from src.models.query import ConversationTurn, QueryError, QueryRequest, QueryResponse
 from src.repositories.poc_repository import PocRepository
+from src.repositories.poc_group_repository import PocGroupRepository
 from src.repositories.query_repository import QueryRepository
+from src.repositories.user_repository import UserRepository, SessionRepository
 from src.models.query import QueryHistoryItem
 from src.services.poc_manager import PocManager
 from src.services.query.engine import QueryEngine
+from src.services.auth.auth_service import AuthService
 
 logger = logging.getLogger(__name__)
 
-# Admin router — protected by Cognito auth (added in main.py)
+# Admin router — protected by platform auth (added in main.py)
 admin_router = APIRouter(tags=["poc-admin"])
 
-# Public router — no Cognito auth, uses POC JWT
+# Public router — now uses platform auth (not POC JWT)
 public_router = APIRouter(tags=["poc-public"])
 
-
-def _create_poc_jwt(poc_id: str, customer_name: str) -> str:
-    """Create a JWT token for POC access."""
-    from jose import jwt
-
-    settings = get_settings()
-    payload = {
-        "poc_id": poc_id,
-        "customer_name": customer_name,
-        "type": "poc",
-        "iat": int(time.time()),
-        "exp": int(time.time()) + (settings.poc_jwt_expire_hours * 3600),
-    }
-    return jwt.encode(payload, settings.poc_jwt_secret, algorithm="HS256")
+_bearer = HTTPBearer(auto_error=False)
 
 
-def _verify_poc_jwt(token: str) -> dict:
-    """Verify a POC JWT and return claims."""
-    from jose import jwt, JWTError
+async def _get_poc_user(
+    credentials: HTTPAuthorizationCredentials | None,
+) -> tuple[any, bool]:
+    """Validate platform auth token and return (user, is_admin).
 
-    settings = get_settings()
-    try:
-        claims = jwt.decode(token, settings.poc_jwt_secret, algorithms=["HS256"])
-    except JWTError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=f"Invalid POC token: {exc}",
-        ) from exc
+    Returns (None, False) if not authenticated.
+    """
+    if not credentials:
+        return None, False
 
-    if claims.get("type") != "poc":
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Not a POC token",
-        )
-    return claims
+    async with get_db() as conn:
+        user_repo = UserRepository(conn)
+        session_repo = SessionRepository(conn)
+        auth_service = AuthService(user_repo, session_repo)
+
+        user = await auth_service.validate_token(credentials.credentials)
+        if not user:
+            return None, False
+
+        return user, user.is_admin
 
 
-async def get_poc_session(token: str) -> dict:
-    """Dependency: extract and verify POC JWT from query param or header."""
-    return _verify_poc_jwt(token)
+async def _check_poc_access(user, poc_id: UUID, is_admin: bool) -> bool:
+    """Check if user can access a specific POC.
+
+    Returns True if:
+    - User is admin, OR
+    - User is in the POC's user group
+    """
+    if is_admin:
+        return True
+
+    if not user:
+        return False
+
+    async with get_db() as conn:
+        group_repo = PocGroupRepository(conn)
+        return await group_repo.is_user_in_poc_group(user.id, poc_id)
 
 
 # ─── Admin endpoints ───────────────────────────────────────────
@@ -87,10 +96,10 @@ async def get_poc_session(token: str) -> dict:
 async def create_poc(
     connection_id: UUID,
     customer_name: str = Form(...),
-    password: str = Form(...),
     model_id: str = Form(default="opus"),
     logo: UploadFile | None = File(default=None),
 ):
+    """Create a POC instance. Access is controlled via platform auth (no password)."""
     logo_data = None
     logo_filename = None
     if logo:
@@ -102,13 +111,11 @@ async def create_poc(
         poc = await manager.create_poc(
             source_connection_id=connection_id,
             customer_name=customer_name,
-            password=password,
             model_id=model_id,
             logo_data=logo_data,
             logo_filename=logo_filename,
         )
 
-    settings = get_settings()
     return PocCreateResponse(
         id=str(poc.id),
         customer_name=poc.customer_name,
@@ -179,55 +186,94 @@ async def deactivate_poc(poc_id: UUID):
 
 @admin_router.delete(
     "/api/v1/poc/{poc_id}",
-    status_code=204,
     summary="Delete a POC instance and its data",
 )
 async def delete_poc(poc_id: UUID):
+    """Delete a POC. Non-admin users who no longer have any POC access are auto-deactivated."""
     async with get_db() as conn:
         manager = PocManager(conn)
-        ok = await manager.delete_poc(poc_id)
+        ok, deactivated_users = await manager.delete_poc(poc_id)
     if not ok:
         raise HTTPException(status_code=404, detail="POC not found")
+    return {
+        "status": "deleted",
+        "deactivated_users": [str(uid) for uid in deactivated_users],
+    }
 
 
 # ─── Public endpoints (POC users) ──────────────────────────────
 
 
-@public_router.post(
-    "/api/v1/poc/{poc_id}/auth",
-    response_model=PocAuthResponse,
-    summary="Authenticate to a POC instance with password",
+@public_router.get(
+    "/api/v1/poc/{poc_id}/check-access",
+    response_model=PocAccessResponse,
+    summary="Check if current user can access this POC",
 )
-async def poc_auth(poc_id: UUID, body: PocAuthRequest):
+async def check_poc_access(
+    poc_id: UUID,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+):
+    """Check if the authenticated user can access this POC.
+
+    Returns access status: can_access, needs_login, or no_access.
+    """
+    user, is_admin = await _get_poc_user(credentials)
+
+    if not user:
+        return PocAccessResponse(
+            can_access=False,
+            reason="not_authenticated",
+        )
+
+    # Check if POC exists and is active
     async with get_db() as conn:
         repo = PocRepository(conn)
         poc = await repo.get_by_id(poc_id)
 
     if not poc:
-        raise HTTPException(status_code=404, detail="POC not found")
-    if not poc.is_active:
-        raise HTTPException(status_code=403, detail="POC is no longer active")
-    if not PocManager.verify_password(body.password, poc.password_hash):
-        raise HTTPException(status_code=401, detail="Invalid password")
+        return PocAccessResponse(
+            can_access=False,
+            reason="poc_not_found",
+        )
 
-    token = _create_poc_jwt(str(poc.id), poc.customer_name)
-    return PocAuthResponse(
-        token=token,
-        poc_id=str(poc.id),
-        customer_name=poc.customer_name,
-        model_id=poc.model_id,
+    if not poc.is_active:
+        return PocAccessResponse(
+            can_access=False,
+            reason="poc_inactive",
+        )
+
+    # Check access
+    has_access = await _check_poc_access(user, poc_id, is_admin)
+
+    if has_access:
+        return PocAccessResponse(
+            can_access=True,
+            reason="admin" if is_admin else "group_member",
+        )
+
+    return PocAccessResponse(
+        can_access=False,
+        reason="no_access",
     )
 
 
 @public_router.get(
     "/api/v1/poc/{poc_id}/info",
     response_model=PocInfoResponse,
-    summary="Get POC instance info (requires POC JWT)",
+    summary="Get POC instance info (requires platform auth)",
 )
-async def poc_info(poc_id: UUID, token: str):
-    claims = _verify_poc_jwt(token)
-    if claims["poc_id"] != str(poc_id):
-        raise HTTPException(status_code=403, detail="Token does not match POC")
+async def poc_info(
+    poc_id: UUID,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+):
+    """Get POC info. User must be admin or in the POC's user group."""
+    user, is_admin = await _get_poc_user(credentials)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
 
     async with get_db() as conn:
         repo = PocRepository(conn)
@@ -235,6 +281,14 @@ async def poc_info(poc_id: UUID, token: str):
 
     if not poc or not poc.is_active:
         raise HTTPException(status_code=404, detail="POC not found or inactive")
+
+    # Check access
+    has_access = await _check_poc_access(user, poc_id, is_admin)
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this POC",
+        )
 
     return PocInfoResponse(
         poc_id=str(poc.id),
@@ -254,12 +308,21 @@ class _PocQueryRequest(QueryRequest):
 @public_router.post(
     "/api/v1/poc/{poc_id}/query",
     response_model=QueryResponse,
-    summary="Ask a question via POC (requires POC JWT)",
+    summary="Ask a question via POC (requires platform auth)",
 )
-async def poc_query(poc_id: UUID, body: _PocQueryRequest, token: str):
-    claims = _verify_poc_jwt(token)
-    if claims["poc_id"] != str(poc_id):
-        raise HTTPException(status_code=403, detail="Token does not match POC")
+async def poc_query(
+    poc_id: UUID,
+    body: _PocQueryRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+):
+    """Execute a query in POC. User must be admin or in the POC's user group."""
+    user, is_admin = await _get_poc_user(credentials)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
 
     async with get_db() as conn:
         repo = PocRepository(conn)
@@ -267,6 +330,14 @@ async def poc_query(poc_id: UUID, body: _PocQueryRequest, token: str):
 
     if not poc or not poc.is_active:
         raise HTTPException(status_code=404, detail="POC not found or inactive")
+
+    # Check access
+    has_access = await _check_poc_access(user, poc_id, is_admin)
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this POC",
+        )
 
     # Override model_id with the POC's fixed model
     body.model_id = poc.model_id
@@ -302,10 +373,19 @@ async def poc_query(poc_id: UUID, body: _PocQueryRequest, token: str):
     "/api/v1/poc/{poc_id}/query/stream",
     summary="Ask a question with SSE streaming (POC)",
 )
-async def poc_query_stream(poc_id: UUID, body: _PocQueryRequest, token: str):
-    claims = _verify_poc_jwt(token)
-    if claims["poc_id"] != str(poc_id):
-        raise HTTPException(status_code=403, detail="Token does not match POC")
+async def poc_query_stream(
+    poc_id: UUID,
+    body: _PocQueryRequest,
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer),
+):
+    """Execute a streaming query in POC. User must be admin or in the POC's user group."""
+    user, is_admin = await _get_poc_user(credentials)
+
+    if not user:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+        )
 
     async with get_db() as conn:
         repo = PocRepository(conn)
@@ -313,6 +393,14 @@ async def poc_query_stream(poc_id: UUID, body: _PocQueryRequest, token: str):
 
     if not poc or not poc.is_active:
         raise HTTPException(status_code=404, detail="POC not found or inactive")
+
+    # Check access
+    has_access = await _check_poc_access(user, poc_id, is_admin)
+    if not has_access:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this POC",
+        )
 
     body.model_id = poc.model_id
 

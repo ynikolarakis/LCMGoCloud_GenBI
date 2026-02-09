@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect } from "react";
-import { BrowserRouter, Routes, Route, NavLink } from "react-router-dom";
+import { BrowserRouter, Routes, Route, NavLink, Navigate } from "react-router-dom";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useAuthStore } from "@/stores/authStore";
 
@@ -24,6 +24,12 @@ const DashboardPage = lazy(() =>
 const LoginPage = lazy(() =>
   import("@/pages/LoginPage").then((m) => ({ default: m.LoginPage })),
 );
+const ForgotPasswordPage = lazy(() =>
+  import("@/pages/ForgotPasswordPage").then((m) => ({ default: m.ForgotPasswordPage })),
+);
+const ResetPasswordPage = lazy(() =>
+  import("@/pages/ResetPasswordPage").then((m) => ({ default: m.ResetPasswordPage })),
+);
 const SchemaPage = lazy(() =>
   import("@/pages/SchemaPage").then((m) => ({ default: m.SchemaPage })),
 );
@@ -40,6 +46,36 @@ const PocChatPage = lazy(() =>
 const LabPage = lazy(() =>
   import("@/pages/LabPage").then((m) => ({
     default: m.LabPage,
+  })),
+);
+const AdminPage = lazy(() =>
+  import("@/pages/AdminPage").then((m) => ({
+    default: m.AdminPage,
+  })),
+);
+const AdminIndex = lazy(() =>
+  import("@/pages/AdminPage").then((m) => ({
+    default: m.AdminIndex,
+  })),
+);
+const AdminUsersPage = lazy(() =>
+  import("@/pages/AdminUsersPage").then((m) => ({
+    default: m.AdminUsersPage,
+  })),
+);
+const AdminLogsPage = lazy(() =>
+  import("@/pages/AdminLogsPage").then((m) => ({
+    default: m.AdminLogsPage,
+  })),
+);
+const AdminStatsPage = lazy(() =>
+  import("@/pages/AdminStatsPage").then((m) => ({
+    default: m.AdminStatsPage,
+  })),
+);
+const AdminPocGroupsPage = lazy(() =>
+  import("@/pages/AdminPocGroupsPage").then((m) => ({
+    default: m.default,
   })),
 );
 
@@ -82,10 +118,17 @@ function NavBar() {
           <NavLink to="/lab" className={linkClass}>
             Lab
           </NavLink>
+          {user?.isAdmin && (
+            <NavLink to="/admin" className={linkClass}>
+              Admin
+            </NavLink>
+          )}
         </nav>
         {authRequired && user && (
           <div className="flex items-center gap-2 border-l pl-4">
-            <span className="text-xs text-gray-500">{user.email}</span>
+            <span className="text-xs text-gray-500">
+              {user.displayName || user.email}
+            </span>
             <button
               onClick={logout}
               className="rounded px-2 py-1 text-xs text-gray-500 hover:bg-gray-100 hover:text-gray-700"
@@ -100,12 +143,17 @@ function NavBar() {
 }
 
 
-function PocApp() {
+function PublicRoutes() {
   return (
     <BrowserRouter>
       <Suspense fallback={<PageLoader />}>
         <Routes>
+          {/* POC route - separate auth system */}
           <Route path="/poc/:pocId" element={<PocChatPage />} />
+          {/* Password reset routes - no auth required */}
+          <Route path="/forgot-password" element={<ForgotPasswordPage />} />
+          <Route path="/reset-password" element={<ResetPasswordPage />} />
+          {/* Everything else goes through auth gate */}
           <Route path="*" element={<AuthGate />} />
         </Routes>
       </Suspense>
@@ -140,7 +188,54 @@ function AuthGate() {
   return <AuthenticatedRoutes />;
 }
 
+function PocOnlyView() {
+  const { pocAccess, logout } = useAuthStore();
+
+  // Redirect to first POC if only one
+  if (pocAccess.length === 1) {
+    return <Navigate to={pocAccess[0].pocUrl} replace />;
+  }
+
+  // Show POC selection if multiple
+  return (
+    <div className="flex min-h-screen flex-col items-center justify-center bg-gray-50 p-6">
+      <div className="w-full max-w-md rounded-lg bg-white p-8 shadow-lg">
+        <div className="mb-6 flex items-center justify-center gap-2">
+          <img src="/logo_en.png" alt="LCM Go Cloud" className="h-10 w-10 object-contain" />
+          <h1 className="text-xl font-semibold text-gray-900">GenBI Platform</h1>
+        </div>
+        <h2 className="mb-4 text-lg font-medium text-gray-700">Select a Demo</h2>
+        <ul className="space-y-2">
+          {pocAccess.map((poc) => (
+            <li key={poc.pocId}>
+              <NavLink
+                to={poc.pocUrl}
+                className="block rounded-lg border p-4 hover:bg-blue-50 hover:border-blue-300 transition-colors"
+              >
+                <span className="font-medium text-blue-600">{poc.pocName}</span>
+              </NavLink>
+            </li>
+          ))}
+        </ul>
+        <button
+          onClick={logout}
+          className="mt-6 w-full rounded px-4 py-2 text-sm text-gray-500 hover:bg-gray-100"
+        >
+          Sign out
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function AuthenticatedRoutes() {
+  const { user, isPocOnlyUser } = useAuthStore();
+
+  // POC-only users get redirected to their POC
+  if (isPocOnlyUser) {
+    return <PocOnlyView />;
+  }
+
   return (
     <div className="flex min-h-screen flex-col bg-gray-50">
       <NavBar />
@@ -156,6 +251,20 @@ function AuthenticatedRoutes() {
             <Route path="/advanced-chat" element={<AdvancedChatPage />} />
             <Route path="/dashboard" element={<DashboardPage />} />
             <Route path="/lab" element={<LabPage />} />
+            {/* Admin routes - only for admin users */}
+            {user?.isAdmin && (
+              <Route path="/admin" element={<AdminPage />}>
+                <Route index element={<AdminIndex />} />
+                <Route path="users" element={<AdminUsersPage />} />
+                <Route path="poc-groups" element={<AdminPocGroupsPage />} />
+                <Route path="logs" element={<AdminLogsPage />} />
+                <Route path="stats" element={<AdminStatsPage />} />
+              </Route>
+            )}
+            {/* Redirect non-admin users away from admin routes */}
+            {!user?.isAdmin && (
+              <Route path="/admin/*" element={<Navigate to="/" replace />} />
+            )}
           </Routes>
         </Suspense>
       </main>
@@ -166,7 +275,7 @@ function AuthenticatedRoutes() {
 function App() {
   return (
     <QueryClientProvider client={queryClient}>
-      <PocApp />
+      <PublicRoutes />
     </QueryClientProvider>
   );
 }

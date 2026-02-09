@@ -1,6 +1,6 @@
 import { useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { startDeepEnrich, uploadManual } from "@/services/api";
+import { startDeepEnrich, uploadManual, pollDeepEnrichStatus } from "@/services/api";
 import type { DeepEnrichOptions, TableInfo } from "@/types/api";
 
 interface Props {
@@ -43,9 +43,7 @@ async function pollUntilDone(
   onProgress: (p: ProgressState) => void,
 ): Promise<{ status: string; summary?: Record<string, number>; error?: string; latest_event?: Record<string, number> }> {
   while (true) {
-    const res = await fetch(`/api/v1/enrichment/deep-enrich/${jobId}/status?t=${Date.now()}`);
-    if (!res.ok) throw new Error("Poll failed");
-    const data = await res.json();
+    const data = await pollDeepEnrichStatus(jobId);
 
     if (data.latest_event) {
       onProgress({

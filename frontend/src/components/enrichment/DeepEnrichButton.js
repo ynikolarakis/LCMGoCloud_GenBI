@@ -1,7 +1,7 @@
 import { jsx as _jsx, jsxs as _jsxs, Fragment as _Fragment } from "react/jsx-runtime";
 import { useState, useCallback, useRef } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { startDeepEnrich, uploadManual } from "@/services/api";
+import { startDeepEnrich, uploadManual, pollDeepEnrichStatus } from "@/services/api";
 const LANGUAGE_OPTIONS = [
     { code: "el", label: "Greek" },
     { code: "en", label: "English" },
@@ -22,10 +22,7 @@ const LANGUAGE_OPTIONS = [
 ];
 async function pollUntilDone(jobId, onProgress) {
     while (true) {
-        const res = await fetch(`/api/v1/enrichment/deep-enrich/${jobId}/status?t=${Date.now()}`);
-        if (!res.ok)
-            throw new Error("Poll failed");
-        const data = await res.json();
+        const data = await pollDeepEnrichStatus(jobId);
         if (data.latest_event) {
             onProgress({
                 message: data.latest_event.message || "Working...",

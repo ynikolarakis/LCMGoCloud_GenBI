@@ -10,8 +10,6 @@ interface SharePocModalProps {
 
 export function SharePocModal({ connectionId, connectionName, onClose, onCreated }: SharePocModalProps) {
   const [customerName, setCustomerName] = useState("");
-  const [password, setPassword] = useState("");
-  const [confirmPassword, setConfirmPassword] = useState("");
   const [modelId, setModelId] = useState("opus");
   const [logo, setLogo] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
@@ -21,21 +19,12 @@ export function SharePocModal({ connectionId, connectionName, onClose, onCreated
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();
-    if (password !== confirmPassword) {
-      setError("Passwords do not match");
-      return;
-    }
-    if (password.length < 4) {
-      setError("Password must be at least 4 characters");
-      return;
-    }
 
     setLoading(true);
     setError(null);
 
     const formData = new FormData();
     formData.append("customer_name", customerName);
-    formData.append("password", password);
     formData.append("model_id", modelId);
     if (logo) formData.append("logo", logo);
 
@@ -72,7 +61,7 @@ export function SharePocModal({ connectionId, connectionName, onClose, onCreated
 
         <p className="mb-4 text-sm text-gray-500">
           Create a branded demo for <span className="font-medium">{connectionName}</span>.
-          All enrichment data will be copied.
+          All enrichment data will be copied. Users must be added to the POC group to access.
         </p>
 
         {result ? (
@@ -96,6 +85,9 @@ export function SharePocModal({ connectionId, connectionName, onClose, onCreated
                 </button>
               </div>
             </div>
+            <p className="text-xs text-gray-500">
+              Go to Admin &rarr; POC Groups to add users who can access this demo.
+            </p>
             <button
               onClick={onClose}
               className="w-full rounded-lg border border-gray-300 py-2 text-sm text-gray-700 hover:bg-gray-50"
@@ -112,28 +104,6 @@ export function SharePocModal({ connectionId, connectionName, onClose, onCreated
                 value={customerName}
                 onChange={(e) => setCustomerName(e.target.value)}
                 placeholder="Acme Corp"
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">Password</label>
-              <input
-                required
-                type="password"
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
-              />
-            </div>
-
-            <div>
-              <label className="mb-1 block text-xs font-medium text-gray-600">Confirm Password</label>
-              <input
-                required
-                type="password"
-                value={confirmPassword}
-                onChange={(e) => setConfirmPassword(e.target.value)}
                 className="w-full rounded border border-gray-300 px-3 py-2 text-sm focus:border-blue-500 focus:outline-none"
               />
             </div>
@@ -186,7 +156,7 @@ export function SharePocModal({ connectionId, connectionName, onClose, onCreated
               </button>
               <button
                 type="submit"
-                disabled={loading || !customerName.trim() || !password.trim()}
+                disabled={loading || !customerName.trim()}
                 className="flex-1 rounded-lg bg-blue-600 py-2 text-sm font-medium text-white hover:bg-blue-700 disabled:opacity-50"
               >
                 {loading ? "Creating..." : "Create POC"}

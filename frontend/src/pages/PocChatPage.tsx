@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { PocPasswordPrompt } from "@/components/poc/PocPasswordPrompt";
+import { useParams, useNavigate } from "react-router-dom";
 import { PocLayout, usePocTheme } from "@/components/poc/PocLayout";
 import { usePocChatStore } from "@/stores/pocChatStore";
-import { hasPocToken, getPocInfo, pocQuery, pocQueryStream, type PocInfoResponse } from "@/services/pocApi";
+import { useAuthStore } from "@/stores/authStore";
+import { checkPocAccess, getPocInfo, pocQuery, pocQueryStream, type PocInfoResponse, type PocAccessResponse } from "@/services/pocApi";
 import { exportChatToPDF } from "@/utils/export";
 import { ResultView } from "@/components/visualization/ResultView";
 import ReactMarkdown from "react-markdown";
@@ -13,34 +13,57 @@ import type { PocChatMessage } from "@/stores/pocChatStore";
 
 export function PocChatPage() {
   const { pocId } = useParams<{ pocId: string }>();
-  const [authenticated, setAuthenticated] = useState(false);
+  const navigate = useNavigate();
+  const { isAuthenticated, isLoading: authLoading, initialize } = useAuthStore();
+  const [accessStatus, setAccessStatus] = useState<PocAccessResponse | null>(null);
   const [pocInfo, setPocInfo] = useState<PocInfoResponse | null>(null);
-  const [authError, setAuthError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
+  // Initialize auth on mount
   useEffect(() => {
-    if (!pocId) return;
-    if (hasPocToken(pocId)) {
-      loadPocInfo();
-    } else {
-      setLoading(false);
-    }
-  }, [pocId]);
+    initialize();
+  }, [initialize]);
 
-  const loadPocInfo = async () => {
-    if (!pocId) return;
-    try {
-      const info = await getPocInfo(pocId);
-      setPocInfo(info);
-      setAuthenticated(true);
-    } catch {
-      setAuthenticated(false);
-    } finally {
-      setLoading(false);
-    }
-  };
+  // Check access once auth is ready
+  useEffect(() => {
+    if (authLoading || !pocId) return;
 
-  if (loading) {
+    const checkAccess = async () => {
+      setLoading(true);
+      setError(null);
+
+      try {
+        const access = await checkPocAccess(pocId);
+        setAccessStatus(access);
+
+        if (access.can_access) {
+          // Load POC info
+          const info = await getPocInfo(pocId);
+          setPocInfo(info);
+        }
+      } catch (err: unknown) {
+        if (err && typeof err === "object" && "response" in err) {
+          const response = (err as { response?: { status?: number } }).response;
+          if (response?.status === 401) {
+            // Not authenticated - redirect to login
+            setAccessStatus({ can_access: false, reason: "not_authenticated" });
+          } else {
+            setError("Failed to check access");
+          }
+        } else {
+          setError("Failed to check access");
+        }
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    checkAccess();
+  }, [authLoading, pocId, isAuthenticated]);
+
+  // Loading state
+  if (authLoading || loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950">
         <div className="flex items-center gap-3 text-slate-500">
@@ -54,6 +77,7 @@ export function PocChatPage() {
     );
   }
 
+  // Invalid POC ID
   if (!pocId) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-slate-950">
@@ -62,19 +86,76 @@ export function PocChatPage() {
     );
   }
 
-  if (!authenticated || !pocInfo) {
+  // Not authenticated - show login prompt
+  if (!isAuthenticated || accessStatus?.reason === "not_authenticated") {
     return (
-      <div>
-        {authError && (
-          <div className="fixed top-4 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-2 text-sm text-red-400 shadow-lg backdrop-blur-sm">
-            {authError}
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6">
+        <div className="w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur-xl">
+          <div className="mb-6 flex items-center justify-center gap-2">
+            <img src="/logo_en.png" alt="LCM Go Cloud" className="h-10 w-10 object-contain" />
+            <h1 className="text-xl font-semibold text-white">GenBI Platform</h1>
           </div>
-        )}
-        <PocPasswordPrompt
-          pocId={pocId}
-          onAuthenticated={() => loadPocInfo()}
-          onError={setAuthError}
-        />
+          <p className="mb-6 text-center text-slate-400">
+            Please log in to access this demo.
+          </p>
+          <button
+            onClick={() => navigate("/")}
+            className="w-full rounded-xl bg-indigo-600 px-4 py-3 font-medium text-white shadow-lg shadow-indigo-500/25 transition-all hover:bg-indigo-500 hover:shadow-indigo-500/40"
+          >
+            Go to Login
+          </button>
+        </div>
+        <p className="mt-6 text-center text-xs text-slate-600">
+          Powered by LCM Go Cloud GenBI
+        </p>
+      </div>
+    );
+  }
+
+  // Access denied
+  if (accessStatus && !accessStatus.can_access) {
+    const messages: Record<string, string> = {
+      no_access: "You don't have permission to access this demo.",
+      poc_not_found: "This demo was not found.",
+      poc_inactive: "This demo is no longer active.",
+    };
+    const message = messages[accessStatus.reason] || "Access denied.";
+
+    return (
+      <div className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6">
+        <div className="w-full max-w-md rounded-2xl border border-red-500/20 bg-red-500/5 p-8 shadow-2xl backdrop-blur-xl">
+          <div className="mb-4 flex justify-center">
+            <svg className="h-12 w-12 text-red-400" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth="1.5">
+              <path strokeLinecap="round" strokeLinejoin="round" d="M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" />
+            </svg>
+          </div>
+          <h2 className="mb-2 text-center text-lg font-semibold text-white">Access Denied</h2>
+          <p className="text-center text-slate-400">{message}</p>
+          <button
+            onClick={() => navigate("/")}
+            className="mt-6 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 transition-colors hover:bg-white/10"
+          >
+            Back to Home
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  // Error state
+  if (error) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950">
+        <p className="text-red-400">{error}</p>
+      </div>
+    );
+  }
+
+  // POC loaded successfully
+  if (!pocInfo) {
+    return (
+      <div className="flex min-h-screen items-center justify-center bg-slate-950">
+        <p className="text-slate-500">Loading demo...</p>
       </div>
     );
   }

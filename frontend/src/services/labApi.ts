@@ -5,9 +5,18 @@ import type { QueryResponse } from "@/types/api";
 
 const client = axios.create({ baseURL: "/api/v1" });
 
-// Attach Cognito JWT token to all requests when available
+// Attach JWT token to all requests when available (local auth first, then Cognito)
 client.interceptors.request.use(async (config) => {
   try {
+    // First, try local auth token
+    const { getStoredToken } = await import("@/services/localAuth");
+    const localToken = getStoredToken();
+    if (localToken) {
+      config.headers.Authorization = `Bearer ${localToken}`;
+      return config;
+    }
+
+    // Fall back to Cognito token
     const { getCurrentSession } = await import("@/services/auth");
     const user = await getCurrentSession();
     if (user?.idToken) {

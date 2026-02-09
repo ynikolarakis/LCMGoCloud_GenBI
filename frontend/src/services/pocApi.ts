@@ -1,30 +1,62 @@
-/** API client for POC sharing endpoints. */
+/** API client for POC sharing endpoints.
+ *
+ * POC access is now controlled via platform auth:
+ * - Admins can access any POC
+ * - Users in a POC's user group can access that POC
+ * - Unauthenticated users are redirected to login
+ */
 
 import axios from "axios";
 import type { QueryRequest, QueryResponse } from "@/types/api";
 
-// Separate axios instance for POC — no Cognito interceptor
+// Helper to get auth headers for all POC requests
+async function getAuthHeaders(): Promise<Record<string, string>> {
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  try {
+    const { getStoredToken } = await import("@/services/localAuth");
+    const localToken = getStoredToken();
+    if (localToken) {
+      headers.Authorization = `Bearer ${localToken}`;
+      return headers;
+    }
+    const { getCurrentSession } = await import("@/services/auth");
+    const user = await getCurrentSession();
+    if (user?.idToken) {
+      headers.Authorization = `Bearer ${user.idToken}`;
+    }
+  } catch {
+    // No auth
+  }
+  return headers;
+}
+
+// Axios client with platform auth
 const pocClient = axios.create({ baseURL: "/api/v1" });
 
-// Attach POC JWT to requests
-pocClient.interceptors.request.use((config) => {
-  const pocId = config.url?.match(/\/poc\/([^/]+)/)?.[1];
-  if (pocId) {
-    const token = localStorage.getItem(`poc_token_${pocId}`);
-    if (token) {
-      config.params = { ...config.params, token };
+pocClient.interceptors.request.use(async (config) => {
+  try {
+    const { getStoredToken } = await import("@/services/localAuth");
+    const localToken = getStoredToken();
+    if (localToken) {
+      config.headers.Authorization = `Bearer ${localToken}`;
+      return config;
     }
+    const { getCurrentSession } = await import("@/services/auth");
+    const user = await getCurrentSession();
+    if (user?.idToken) {
+      config.headers.Authorization = `Bearer ${user.idToken}`;
+    }
+  } catch {
+    // No auth
   }
   return config;
 });
 
 // ─── Types ─────────────────────────────────────────────────
 
-export interface PocAuthResponse {
-  token: string;
-  poc_id: string;
-  customer_name: string;
-  model_id: string;
+export interface PocAccessResponse {
+  can_access: boolean;
+  reason: string; // "admin", "group_member", "not_authenticated", "no_access", "poc_not_found", "poc_inactive"
 }
 
 export interface PocInfoResponse {
@@ -52,19 +84,17 @@ export interface PocListItem {
   created_at: string;
 }
 
-// ─── Public (POC user) ────────────────────────────────────
+// ─── POC Access ────────────────────────────────────────────
 
-export const authenticatePoc = (pocId: string, password: string) =>
-  pocClient
-    .post<PocAuthResponse>(`/poc/${pocId}/auth`, { password })
-    .then((r) => {
-      localStorage.setItem(`poc_token_${pocId}`, r.data.token);
-      return r.data;
-    });
+/** Check if current user can access a POC */
+export const checkPocAccess = (pocId: string) =>
+  pocClient.get<PocAccessResponse>(`/poc/${pocId}/check-access`).then((r) => r.data);
 
+/** Get POC info (requires platform auth) */
 export const getPocInfo = (pocId: string) =>
   pocClient.get<PocInfoResponse>(`/poc/${pocId}/info`).then((r) => r.data);
 
+/** Execute a query in POC */
 export const pocQuery = (pocId: string, body: QueryRequest) =>
   pocClient
     .post<QueryResponse>(`/poc/${pocId}/query`, body)
@@ -76,23 +106,28 @@ export interface PocStreamCallbacks {
   onError?: (error: { error: string; error_type: string }) => void;
 }
 
+/** Execute a streaming query in POC (uses platform auth) */
 export async function pocQueryStream(
   pocId: string,
   body: QueryRequest,
   callbacks: PocStreamCallbacks,
 ): Promise<void> {
-  const token = localStorage.getItem(`poc_token_${pocId}`);
-  const response = await fetch(
-    `/api/v1/poc/${pocId}/query/stream?token=${encodeURIComponent(token ?? "")}`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-    },
-  );
+  const headers = await getAuthHeaders();
+
+  const response = await fetch(`/api/v1/poc/${pocId}/query/stream`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
 
   if (!response.ok || !response.body) {
-    callbacks.onError?.({ error: "Stream request failed", error_type: "execution" });
+    if (response.status === 401) {
+      callbacks.onError?.({ error: "Authentication required", error_type: "auth" });
+    } else if (response.status === 403) {
+      callbacks.onError?.({ error: "You don't have access to this POC", error_type: "access" });
+    } else {
+      callbacks.onError?.({ error: "Stream request failed", error_type: "execution" });
+    }
     return;
   }
 
@@ -143,46 +178,24 @@ export async function pocQueryStream(
 
 // ─── Admin ─────────────────────────────────────────────────
 
-// Admin client (with Cognito auth)
-const adminClient = axios.create({ baseURL: "/api/v1" });
-
-// Attach Cognito JWT for admin routes
-adminClient.interceptors.request.use(async (config) => {
-  try {
-    const { getCurrentSession } = await import("@/services/auth");
-    const user = await getCurrentSession();
-    if (user?.idToken) {
-      config.headers.Authorization = `Bearer ${user.idToken}`;
-    }
-  } catch {
-    // No auth
-  }
-  return config;
-});
-
+/** Create a POC (no password required) */
 export const createPoc = (connectionId: string, data: FormData) =>
-  adminClient
+  pocClient
     .post<PocCreateResponse>(`/connections/${connectionId}/poc`, data, {
       headers: { "Content-Type": "multipart/form-data" },
     })
     .then((r) => r.data);
 
 export const listPocs = () =>
-  adminClient.get<PocListItem[]>("/poc/list").then((r) => r.data);
+  pocClient.get<PocListItem[]>("/poc/list").then((r) => r.data);
 
 export const listPocsForConnection = (connectionId: string) =>
-  adminClient.get<PocListItem[]>(`/connections/${connectionId}/poc`).then((r) => r.data);
+  pocClient.get<PocListItem[]>(`/connections/${connectionId}/poc`).then((r) => r.data);
 
 export const deactivatePoc = (pocId: string) =>
-  adminClient.post(`/poc/${pocId}/deactivate`);
+  pocClient.post(`/poc/${pocId}/deactivate`);
 
 export const deletePoc = (pocId: string) =>
-  adminClient.delete(`/poc/${pocId}`);
+  pocClient.delete(`/poc/${pocId}`);
 
 export const getPocLogoUrl = (pocId: string) => `/api/v1/poc/${pocId}/logo`;
-
-export const hasPocToken = (pocId: string) =>
-  !!localStorage.getItem(`poc_token_${pocId}`);
-
-export const clearPocToken = (pocId: string) =>
-  localStorage.removeItem(`poc_token_${pocId}`);

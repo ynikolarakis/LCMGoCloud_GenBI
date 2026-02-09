@@ -111,6 +111,22 @@ class QueryEngine:
             custom_instructions = await instructions_repo.get_by_connection(connection_id)
 
         system_prompt = SQL_GENERATION_SYSTEM
+
+        # Inject current date dynamically (Cyprus timezone)
+        from datetime import datetime
+        import zoneinfo
+        try:
+            cyprus_tz = zoneinfo.ZoneInfo("Europe/Nicosia")
+            now = datetime.now(cyprus_tz)
+            current_date = now.strftime("%B %Y")  # e.g., "February 2026"
+            current_year = now.year
+            system_prompt += f"\n\n## Current Date Information:\n"
+            system_prompt += f"- Today's date is {current_date}. The current year is {current_year}.\n"
+            system_prompt += f"- Data from years 2022-{current_year - 1} is HISTORICAL (past data), NOT future data.\n"
+            system_prompt += f"- Do NOT refer to dates in {current_year - 1} or earlier as 'future dates'."
+        except Exception:
+            pass  # If timezone fails, skip dynamic date
+
         if custom_instructions:
             rules = "\n".join(f"- {i.instruction}" for i in custom_instructions)
             system_prompt += f"\n\n## Database-specific rules:\n{rules}"

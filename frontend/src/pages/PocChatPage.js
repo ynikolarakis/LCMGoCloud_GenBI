@@ -1,53 +1,92 @@
 import { jsx as _jsx, jsxs as _jsxs } from "react/jsx-runtime";
 import { useEffect, useRef, useState } from "react";
-import { useParams } from "react-router-dom";
-import { PocPasswordPrompt } from "@/components/poc/PocPasswordPrompt";
+import { useParams, useNavigate } from "react-router-dom";
 import { PocLayout, usePocTheme } from "@/components/poc/PocLayout";
 import { usePocChatStore } from "@/stores/pocChatStore";
-import { hasPocToken, getPocInfo, pocQuery, pocQueryStream } from "@/services/pocApi";
+import { useAuthStore } from "@/stores/authStore";
+import { checkPocAccess, getPocInfo, pocQuery, pocQueryStream } from "@/services/pocApi";
 import { exportChatToPDF } from "@/utils/export";
 import { ResultView } from "@/components/visualization/ResultView";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 export function PocChatPage() {
     const { pocId } = useParams();
-    const [authenticated, setAuthenticated] = useState(false);
+    const navigate = useNavigate();
+    const { isAuthenticated, isLoading: authLoading, initialize } = useAuthStore();
+    const [accessStatus, setAccessStatus] = useState(null);
     const [pocInfo, setPocInfo] = useState(null);
-    const [authError, setAuthError] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    // Initialize auth on mount
     useEffect(() => {
-        if (!pocId)
+        initialize();
+    }, [initialize]);
+    // Check access once auth is ready
+    useEffect(() => {
+        if (authLoading || !pocId)
             return;
-        if (hasPocToken(pocId)) {
-            loadPocInfo();
-        }
-        else {
-            setLoading(false);
-        }
-    }, [pocId]);
-    const loadPocInfo = async () => {
-        if (!pocId)
-            return;
-        try {
-            const info = await getPocInfo(pocId);
-            setPocInfo(info);
-            setAuthenticated(true);
-        }
-        catch {
-            setAuthenticated(false);
-        }
-        finally {
-            setLoading(false);
-        }
-    };
-    if (loading) {
+        const checkAccess = async () => {
+            setLoading(true);
+            setError(null);
+            try {
+                const access = await checkPocAccess(pocId);
+                setAccessStatus(access);
+                if (access.can_access) {
+                    // Load POC info
+                    const info = await getPocInfo(pocId);
+                    setPocInfo(info);
+                }
+            }
+            catch (err) {
+                if (err && typeof err === "object" && "response" in err) {
+                    const response = err.response;
+                    if (response?.status === 401) {
+                        // Not authenticated - redirect to login
+                        setAccessStatus({ can_access: false, reason: "not_authenticated" });
+                    }
+                    else {
+                        setError("Failed to check access");
+                    }
+                }
+                else {
+                    setError("Failed to check access");
+                }
+            }
+            finally {
+                setLoading(false);
+            }
+        };
+        checkAccess();
+    }, [authLoading, pocId, isAuthenticated]);
+    // Loading state
+    if (authLoading || loading) {
         return (_jsx("div", { className: "flex min-h-screen items-center justify-center bg-slate-950", children: _jsxs("div", { className: "flex items-center gap-3 text-slate-500", children: [_jsxs("svg", { className: "h-5 w-5 animate-spin", viewBox: "0 0 24 24", fill: "none", children: [_jsx("circle", { className: "opacity-25", cx: "12", cy: "12", r: "10", stroke: "currentColor", strokeWidth: "3" }), _jsx("path", { className: "opacity-75", fill: "currentColor", d: "M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" })] }), _jsx("span", { className: "text-sm", children: "Loading..." })] }) }));
     }
+    // Invalid POC ID
     if (!pocId) {
         return (_jsx("div", { className: "flex min-h-screen items-center justify-center bg-slate-950", children: _jsx("p", { className: "text-slate-500", children: "Invalid link." }) }));
     }
-    if (!authenticated || !pocInfo) {
-        return (_jsxs("div", { children: [authError && (_jsx("div", { className: "fixed top-4 left-1/2 z-50 -translate-x-1/2 rounded-lg border border-red-500/20 bg-red-500/10 px-4 py-2 text-sm text-red-400 shadow-lg backdrop-blur-sm", children: authError })), _jsx(PocPasswordPrompt, { pocId: pocId, onAuthenticated: () => loadPocInfo(), onError: setAuthError })] }));
+    // Not authenticated - show login prompt
+    if (!isAuthenticated || accessStatus?.reason === "not_authenticated") {
+        return (_jsxs("div", { className: "flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6", children: [_jsxs("div", { className: "w-full max-w-md rounded-2xl border border-white/10 bg-white/5 p-8 shadow-2xl backdrop-blur-xl", children: [_jsxs("div", { className: "mb-6 flex items-center justify-center gap-2", children: [_jsx("img", { src: "/logo_en.png", alt: "LCM Go Cloud", className: "h-10 w-10 object-contain" }), _jsx("h1", { className: "text-xl font-semibold text-white", children: "GenBI Platform" })] }), _jsx("p", { className: "mb-6 text-center text-slate-400", children: "Please log in to access this demo." }), _jsx("button", { onClick: () => navigate("/"), className: "w-full rounded-xl bg-indigo-600 px-4 py-3 font-medium text-white shadow-lg shadow-indigo-500/25 transition-all hover:bg-indigo-500 hover:shadow-indigo-500/40", children: "Go to Login" })] }), _jsx("p", { className: "mt-6 text-center text-xs text-slate-600", children: "Powered by LCM Go Cloud GenBI" })] }));
+    }
+    // Access denied
+    if (accessStatus && !accessStatus.can_access) {
+        const messages = {
+            no_access: "You don't have permission to access this demo.",
+            poc_not_found: "This demo was not found.",
+            poc_inactive: "This demo is no longer active.",
+        };
+        const message = messages[accessStatus.reason] || "Access denied.";
+        return (_jsx("div", { className: "flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-slate-950 via-slate-900 to-slate-950 p-6", children: _jsxs("div", { className: "w-full max-w-md rounded-2xl border border-red-500/20 bg-red-500/5 p-8 shadow-2xl backdrop-blur-xl", children: [_jsx("div", { className: "mb-4 flex justify-center", children: _jsx("svg", { className: "h-12 w-12 text-red-400", fill: "none", viewBox: "0 0 24 24", stroke: "currentColor", strokeWidth: "1.5", children: _jsx("path", { strokeLinecap: "round", strokeLinejoin: "round", d: "M12 9v3.75m9-.75a9 9 0 1 1-18 0 9 9 0 0 1 18 0Zm-9 3.75h.008v.008H12v-.008Z" }) }) }), _jsx("h2", { className: "mb-2 text-center text-lg font-semibold text-white", children: "Access Denied" }), _jsx("p", { className: "text-center text-slate-400", children: message }), _jsx("button", { onClick: () => navigate("/"), className: "mt-6 w-full rounded-xl border border-white/10 bg-white/5 px-4 py-2 text-sm text-slate-300 transition-colors hover:bg-white/10", children: "Back to Home" })] }) }));
+    }
+    // Error state
+    if (error) {
+        return (_jsx("div", { className: "flex min-h-screen items-center justify-center bg-slate-950", children: _jsx("p", { className: "text-red-400", children: error }) }));
+    }
+    // POC loaded successfully
+    if (!pocInfo) {
+        return (_jsx("div", { className: "flex min-h-screen items-center justify-center bg-slate-950", children: _jsx("p", { className: "text-slate-500", children: "Loading demo..." }) }));
     }
     return (_jsx(PocLayout, { pocId: pocId, customerName: pocInfo.customer_name, children: _jsx(PocChatContent, { pocId: pocId, pocInfo: pocInfo }) }));
 }

@@ -170,7 +170,7 @@ class DeepEnrichmentAgent:
         sw_guidance_text = ""
         async with get_db() as conn:
             repo = EnrichmentRepository(conn)
-            sw_guidance = await repo.get_software_guidance(UUID(connection_id))
+            sw_guidance = await repo.get_software_guidance(connection_id)
             if sw_guidance and sw_guidance.confirmed:
                 sw_guidance_text = sw_guidance.guidance_text
 

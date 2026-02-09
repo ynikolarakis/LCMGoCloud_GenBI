@@ -438,4 +438,117 @@ MIGRATIONS: list[dict[str, str]] = [
                 ON lab_schema_embeddings(connection_id, entity_type);
         """,
     },
+    {
+        "version": "022",
+        "description": "Create local auth tables: users, sessions, audit logs, usage stats, rate limits",
+        "sql": """
+            -- Users table
+            CREATE TABLE IF NOT EXISTS users (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                email VARCHAR(255) NOT NULL UNIQUE,
+                password_hash VARCHAR(200) NOT NULL,
+                display_name VARCHAR(255),
+                is_active BOOLEAN NOT NULL DEFAULT TRUE,
+                is_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                session_lifetime_hours INTEGER NOT NULL DEFAULT 24,
+                last_login_at TIMESTAMP WITH TIME ZONE,
+                password_reset_token VARCHAR(200),
+                password_reset_expires_at TIMESTAMP WITH TIME ZONE,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
+
+            -- User sessions for token tracking and revocation
+            CREATE TABLE IF NOT EXISTS user_sessions (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                token_hash VARCHAR(100) NOT NULL,
+                ip_address VARCHAR(45),
+                user_agent VARCHAR(500),
+                expires_at TIMESTAMP WITH TIME ZONE NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                last_active_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_user ON user_sessions(user_id);
+            CREATE INDEX IF NOT EXISTS idx_user_sessions_token ON user_sessions(token_hash);
+
+            -- Audit logs
+            CREATE TABLE IF NOT EXISTS audit_logs (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+                action VARCHAR(100) NOT NULL,
+                resource_type VARCHAR(50),
+                resource_id UUID,
+                details JSONB,
+                ip_address VARCHAR(45),
+                user_agent VARCHAR(500),
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action);
+            CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC);
+
+            -- Connection usage statistics (daily aggregates)
+            CREATE TABLE IF NOT EXISTS connection_usage_stats (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                connection_id UUID NOT NULL REFERENCES connections(id) ON DELETE CASCADE,
+                date DATE NOT NULL,
+                query_count INTEGER NOT NULL DEFAULT 0,
+                error_count INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                UNIQUE(connection_id, date)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_usage_stats_conn ON connection_usage_stats(connection_id);
+            CREATE INDEX IF NOT EXISTS idx_usage_stats_date ON connection_usage_stats(date DESC);
+
+            -- Per-user rate limits (overrides global)
+            CREATE TABLE IF NOT EXISTS user_rate_limits (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                requests_per_minute INTEGER NOT NULL DEFAULT 60,
+                queries_per_day INTEGER,
+                UNIQUE(user_id)
+            );
+        """,
+    },
+    {
+        "version": "023",
+        "description": "Create POC user groups tables for restricted POC access",
+        "sql": """
+            -- POC user groups (auto-created when POC is created)
+            CREATE TABLE IF NOT EXISTS poc_user_groups (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                poc_id UUID NOT NULL REFERENCES poc_instances(id) ON DELETE CASCADE,
+                name VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(poc_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_poc_groups_poc ON poc_user_groups(poc_id);
+
+            -- POC group members (links users to POC groups)
+            CREATE TABLE IF NOT EXISTS poc_group_members (
+                id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+                group_id UUID NOT NULL REFERENCES poc_user_groups(id) ON DELETE CASCADE,
+                user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                added_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                UNIQUE(group_id, user_id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_poc_members_group ON poc_group_members(group_id);
+            CREATE INDEX IF NOT EXISTS idx_poc_members_user ON poc_group_members(user_id);
+        """,
+    },
+    {
+        "version": "024",
+        "description": "Make POC password_hash nullable (platform auth replaces POC passwords)",
+        "sql": """
+            ALTER TABLE poc_instances ALTER COLUMN password_hash DROP NOT NULL;
+        """,
+    },
 ]

@@ -14,6 +14,8 @@ import psycopg
 from src.config import get_settings
 from src.models.poc import PocInstance
 from src.repositories.poc_repository import PocRepository
+from src.repositories.poc_group_repository import PocGroupRepository
+from src.repositories.user_repository import UserRepository
 
 logger = logging.getLogger(__name__)
 
@@ -24,17 +26,20 @@ class PocManager:
     def __init__(self, conn: psycopg.AsyncConnection):
         self.conn = conn
         self.repo = PocRepository(conn)
+        self.group_repo = PocGroupRepository(conn)
 
     async def create_poc(
         self,
         source_connection_id: UUID,
         customer_name: str,
-        password: str,
         model_id: str,
         logo_data: bytes | None = None,
         logo_filename: str | None = None,
     ) -> PocInstance:
-        """Create a POC instance with deep-copied connection and enrichment."""
+        """Create a POC instance with deep-copied connection and enrichment.
+
+        Access is controlled via platform auth - no password required.
+        """
         poc_id = uuid4()
 
         # Deep copy connection
@@ -50,23 +55,25 @@ class PocManager:
         if logo_data and logo_filename:
             logo_path = self._save_logo(poc_id, logo_data, logo_filename)
 
-        # Hash password
-        password_hash = bcrypt.hashpw(
-            password.encode("utf-8"), bcrypt.gensalt()
-        ).decode("utf-8")
-
-        # Create POC instance
+        # Create POC instance (no password hash needed)
         poc = PocInstance(
             id=poc_id,
             source_connection_id=source_connection_id,
             poc_connection_id=poc_connection_id,
             customer_name=customer_name,
             logo_path=logo_path,
-            password_hash=password_hash,
+            password_hash=None,  # Platform auth, no password
             model_id=model_id,
             created_at=datetime.utcnow(),
         )
-        return await self.repo.create(poc)
+        created_poc = await self.repo.create(poc)
+
+        # Auto-create user group for this POC
+        group_name = f"POC - {customer_name}"
+        await self.group_repo.create_group(poc_id, group_name)
+        logger.info("Created user group '%s' for POC %s", group_name, poc_id)
+
+        return created_poc
 
     async def _deep_copy_connection(
         self, source_id: UUID, customer_name: str
@@ -357,13 +364,20 @@ class PocManager:
             hashed_password.encode("utf-8"),
         )
 
-    async def delete_poc(self, poc_id: UUID) -> bool:
-        """Delete a POC and its copied connection (CASCADE handles enrichment)."""
+    async def delete_poc(self, poc_id: UUID) -> tuple[bool, list[UUID]]:
+        """Delete a POC and its copied connection (CASCADE handles enrichment).
+
+        Returns (success, list of deactivated user IDs).
+        Non-admin users who no longer belong to any POC group are auto-deactivated.
+        """
         poc = await self.repo.get_by_id(poc_id)
         if not poc:
-            return False
+            return False, []
 
-        # Delete the copied connection (CASCADE will clean enrichment)
+        # Get non-admin users in this POC's group BEFORE deletion
+        users_to_check = await self.group_repo.get_non_admin_users_in_poc(poc_id)
+
+        # Delete the copied connection (CASCADE will clean enrichment, poc_instances, groups, members)
         await self.conn.execute(
             "DELETE FROM connections WHERE id = %s",
             (str(poc.poc_connection_id),),
@@ -379,5 +393,15 @@ class PocManager:
             if os.path.exists(full_path):
                 os.remove(full_path)
 
-        # poc_instances row deleted by CASCADE from connections
-        return True
+        # Check each user - if they have no other POC access, deactivate them
+        deactivated_users: list[UUID] = []
+        user_repo = UserRepository(self.conn)
+
+        for user_id in users_to_check:
+            remaining_memberships = await self.group_repo.count_user_poc_memberships(user_id)
+            if remaining_memberships == 0:
+                await user_repo.deactivate(user_id)
+                deactivated_users.append(user_id)
+                logger.info("Auto-deactivated orphaned POC user %s", user_id)
+
+        return True, deactivated_users

@@ -35,11 +35,34 @@ class Settings(BaseSettings):
     bedrock_model_id: str = "eu.anthropic.claude-opus-4-5-20251101-v1:0"
     bedrock_max_tokens: int = 4096
 
-    # Auth (Cognito)
+    # Auth mode: "local", "cognito", or "none" (dev only)
+    auth_mode: str = "none"  # "local" | "cognito" | "none"
+
+    # Auth (Cognito) - used when auth_mode="cognito"
     cognito_user_pool_id: str = ""
     cognito_client_id: str = ""
     cognito_region: str = ""  # defaults to aws_region if empty
-    auth_enabled: bool = False
+    auth_enabled: bool = False  # Legacy: use auth_mode instead
+
+    # Auth (Local) - used when auth_mode="local"
+    auth_jwt_secret: str = "genbi-auth-secret-change-in-production"
+    auth_default_session_hours: int = 24
+
+    # First admin seeding (only if no users exist and auth_mode="local")
+    first_admin_email: str = ""
+    first_admin_password: str = ""
+
+    # Email service for password reset
+    email_provider: str = ""  # "ses", "smtp", or "" (disabled, logs to console)
+    email_from_address: str = "noreply@genbi.local"
+    app_base_url: str = "http://localhost:5173"
+
+    # SMTP settings (if email_provider="smtp")
+    smtp_host: str = ""
+    smtp_port: int = 587
+    smtp_use_tls: bool = True
+    smtp_username: str = ""
+    smtp_password: str = ""
 
     # Query execution limits
     query_timeout_seconds: int = 60
