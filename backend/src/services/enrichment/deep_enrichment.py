@@ -43,7 +43,6 @@ class DeepEnrichOptions(BaseModel):
     business_domain: str | None = None
     company_name: str | None = None
     additional_instructions: str | None = None
-    value_threshold: int = 150
     manual_id: str | None = None
     generate_tables: bool = True
     generate_columns: bool = True
@@ -176,7 +175,7 @@ class DeepEnrichmentAgent:
 
         config = connection_data
         secrets = SecretsManagerClient()
-        password = secrets.get_password(connection_id)
+        password = await secrets.get_password(connection_id)
         connector = ConnectorFactory.create(config, password)
 
         table_count = len(tables)
@@ -234,8 +233,10 @@ class DeepEnrichmentAgent:
                 "distinct_values": {},
             }
 
-            # ── Cardinality-based categorical detection ──
-            # Build a single query to get distinct count for ALL columns in this table
+            # ── Cardinality detection: fetch distinct values for low-cardinality columns ──
+            # Internal limit: fetch distinct values for columns with < 500 distinct values.
+            # The LLM will decide which are truly categorical and need value descriptions.
+            _FETCH_LIMIT = 500
             if options.generate_values and t.columns:
                 step += 1
                 if on_progress:
@@ -277,10 +278,13 @@ class DeepEnrichmentAgent:
                     logger.warning("Failed cardinality check for %s: %s", table_key, exc)
                     cardinalities = {}
 
-                # For columns below threshold, fetch distinct values
+                # Store cardinality counts for all columns (LLM uses this)
+                exploration[table_key]["cardinalities"] = cardinalities
+
+                # Fetch distinct values for columns below the internal limit
                 for c in t.columns:
                     col_count = cardinalities.get(c.column_name)
-                    if col_count is None or col_count >= options.value_threshold:
+                    if col_count is None or col_count >= _FETCH_LIMIT:
                         continue
                     if col_count == 0:
                         continue
@@ -448,6 +452,24 @@ class DeepEnrichmentAgent:
                         tbl_data["sample_rows"] = tbl_data.get("sample_rows", [])[:1]
                 exploration_text = json.dumps(batch_exploration, indent=1, default=str)
 
+            # Build explicit list of columns needing value descriptions
+            # This makes it crystal clear to the LLM which columns need descriptions
+            value_desc_columns: list[dict[str, Any]] = []
+            if options.generate_values:
+                for tbl_key, tbl_data in batch_exploration.items():
+                    dv = tbl_data.get("distinct_values", {})
+                    for col_name, vals in dv.items():
+                        if isinstance(vals, list) and vals:
+                            value_desc_columns.append({
+                                "table": tbl_key,
+                                "column": col_name,
+                                "count": len(vals),
+                                "values": [
+                                    list(v.values())[0] if isinstance(v, dict) else v
+                                    for v in vals[:30]
+                                ],
+                            })
+
             # Get manual context for this batch's tables
             manual_section = ""
             if manual_text:
@@ -486,6 +508,7 @@ class DeepEnrichmentAgent:
                 existing_columns=batch_existing_columns,
                 column_value_guidance=batch_value_guidance,
                 software_guidance=sw_guidance_text,
+                value_desc_columns=value_desc_columns,
             )
 
             logger.info(
@@ -725,7 +748,7 @@ class DeepEnrichmentAgent:
                 from src.models.enrichment import ColumnValueDescriptionCreate
                 values = [
                     ColumnValueDescriptionCreate(
-                        value=v["value"],
+                        value=str(v["value"]),
                         display_name=v.get("display_name"),
                         description=v.get("description"),
                     )
@@ -749,9 +772,10 @@ class DeepEnrichmentAgent:
             # Example queries — skipped (user-created only)
 
         logger.info(
-            "Deep enrichment saved: %d tables, %d columns, %d glossary, %d examples",
+            "Deep enrichment saved: %d tables, %d columns, %d value_descs, %d glossary, %d examples",
             len(enrichment.get("tables", [])),
             len(enrichment.get("columns", [])),
+            len(enrichment.get("value_descriptions", [])),
             len(enrichment.get("glossary", [])),
             len(enrichment.get("example_queries", [])),
         )

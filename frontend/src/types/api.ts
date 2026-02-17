@@ -280,7 +280,6 @@ export interface DeepEnrichOptions {
   business_domain: string | null;
   company_name: string | null;
   additional_instructions: string | null;
-  value_threshold: number;
   manual_id: string | null;
   generate_tables: boolean;
   generate_columns: boolean;

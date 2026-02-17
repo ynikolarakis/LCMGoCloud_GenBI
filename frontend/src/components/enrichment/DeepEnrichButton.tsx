@@ -89,7 +89,6 @@ export function DeepEnrichButton({ connectionId, tables, hasExistingEnrichment }
   const [businessDomain, setBusinessDomain] = useState("");
   const [companyName, setCompanyName] = useState("");
   const [additionalInstructions, setAdditionalInstructions] = useState("");
-  const [valueThreshold, setValueThreshold] = useState(150);
   const [manualFile, setManualFile] = useState<File | null>(null);
   const [manualId, setManualId] = useState<string | null>(null);
   const [genTables, setGenTables] = useState(true);
@@ -155,7 +154,6 @@ export function DeepEnrichButton({ connectionId, tables, hasExistingEnrichment }
       business_domain: businessDomain || null,
       company_name: companyName || null,
       additional_instructions: additionalInstructions || null,
-      value_threshold: valueThreshold,
       manual_id: manualId,
       generate_tables: genTables,
       generate_columns: genColumns,
@@ -197,7 +195,7 @@ export function DeepEnrichButton({ connectionId, tables, hasExistingEnrichment }
     }
   }, [
     connectionId, primaryLang, secondaryLang, includeSecondary, businessDomain,
-    companyName, additionalInstructions, valueThreshold, manualId,
+    companyName, additionalInstructions, manualId,
     genTables, genColumns, genValues, genGlossary, genExamples, genRelationships,
     overwriteExisting, scopeAll, scopeTableIds, maxIterations, queryTimeout,
     invalidateAll,
@@ -326,26 +324,6 @@ export function DeepEnrichButton({ connectionId, tables, hasExistingEnrichment }
                 rows={3}
                 className="w-full rounded border border-gray-300 px-3 py-2 text-sm"
               />
-            </div>
-
-            {/* Value threshold */}
-            <div className="mb-4">
-              <label className="mb-1 block text-sm font-medium text-gray-700">
-                Value Description Threshold
-              </label>
-              <div className="flex items-center gap-2">
-                <input
-                  type="number"
-                  value={valueThreshold}
-                  onChange={(e) => setValueThreshold(Number(e.target.value))}
-                  min={1}
-                  max={1000}
-                  className="w-24 rounded border border-gray-300 px-3 py-2 text-sm"
-                />
-                <span className="text-xs text-gray-500">
-                  Generate value descriptions for columns with fewer than N distinct values
-                </span>
-              </div>
             </div>
 
             {/* Manual upload */}

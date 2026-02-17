@@ -298,7 +298,10 @@ async def get_distinct_values(column_id: UUID):
 
         full_table = f'"{schema_name}"."{table_name}"'
         quoted_col = f'"{column_name}"'
-        query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
+        if config.db_type == "mssql":
+            query = f"SELECT DISTINCT TOP 50 {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val"
+        else:
+            query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
         results = await connector.execute_query(query)
         return [str(r.get("val", r[list(r.keys())[0]])) for r in results if r]
     except HTTPException:
@@ -360,7 +363,10 @@ async def suggest_value_descriptions(column_id: UUID, language: str = "en"):
 
         full_table = f'"{schema_name}"."{table_name}"'
         quoted_col = f'"{column_name}"'
-        query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
+        if config.db_type == "mssql":
+            query = f"SELECT DISTINCT TOP 50 {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val"
+        else:
+            query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
         results = await connector.execute_query(query)
         distinct_values = [str(r.get("val") or r[list(r.keys())[0]]) for r in results if r]
     except HTTPException:
@@ -734,7 +740,10 @@ async def bulk_ai_generate_value_descriptions(
                 column_name = col_info["column_name"]
                 full_table = f'{q}{schema_name}{q}.{q}{table_name}{q}'
                 quoted_col = f'{q}{column_name}{q}'
-                query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
+                if config.db_type.value == "mssql":
+                    query = f"SELECT DISTINCT TOP 50 {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val"
+                else:
+                    query = f"SELECT DISTINCT {quoted_col} AS val FROM {full_table} WHERE {quoted_col} IS NOT NULL ORDER BY val LIMIT 50"
                 results = await connector.execute_query(query)
                 distinct_values = [
                     str(r.get("val") or r[list(r.keys())[0]])

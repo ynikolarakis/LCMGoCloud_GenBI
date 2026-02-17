@@ -79,7 +79,6 @@ class Settings(BaseSettings):
     deep_enrich_max_iterations: int = 50
     deep_enrich_query_timeout: int = 10
     deep_enrich_max_rows: int = 100
-    deep_enrich_value_threshold: int = 150
     deep_enrich_manual_max_size_mb: int = 10
 
     # Connection pool

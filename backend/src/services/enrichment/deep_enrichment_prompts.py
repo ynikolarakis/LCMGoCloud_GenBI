@@ -98,6 +98,7 @@ def build_deep_enrichment_prompt(
     existing_columns: set[str] | None = None,
     column_value_guidance: dict[str, str] | None = None,
     software_guidance: str = "",
+    value_desc_columns: list[dict] | None = None,
 ) -> str:
     """Build the full prompt for deep enrichment with dynamic configuration."""
     language_instructions = _build_language_instructions(options)
@@ -156,6 +157,29 @@ def build_deep_enrichment_prompt(
             "to ensure completeness, but you can use simpler descriptions if needed.\n"
         )
 
+    # Build explicit value descriptions checklist
+    value_desc_checklist = ""
+    if value_desc_columns:
+        checklist_lines = [
+            f"\n## MANDATORY Value Descriptions ({len(value_desc_columns)} columns)\n",
+            "You MUST generate a value_descriptions entry for EVERY column listed below — "
+            "no exceptions, no skipping. Each column here has a limited number of distinct "
+            "values and business users need display_name and description for EVERY value. "
+            "This includes country names, city names, category names, titles, statuses, "
+            "codes, flags, regions — ALL of them, even if the values seem obvious.\n",
+        ]
+        for vdc in value_desc_columns:
+            vals_preview = ", ".join(str(v) for v in vdc["values"][:15])
+            if vdc["count"] > 15:
+                vals_preview += f", ... ({vdc['count']} total)"
+            checklist_lines.append(
+                f"- [ ] **{vdc['table']}.{vdc['column']}** ({vdc['count']} values): {vals_preview}"
+            )
+        checklist_lines.append(
+            f"\nYour value_descriptions array MUST have exactly {len(value_desc_columns)} entries.\n"
+        )
+        value_desc_checklist = "\n".join(checklist_lines)
+
     # Build bilingual or monolingual JSON examples
     if options.secondary_language:
         primary = _get_lang_name(options.primary_language)
@@ -204,6 +228,7 @@ help business users understand this data through natural language.
 
 {exploration_data}
 {manual_section}{software_section}{additional}{value_guidance_section}{generate_section}{existing_note}\
+{value_desc_checklist}\
 ## Your Task
 
 Produce a single JSON object with the following structure. Your response must be \
@@ -258,13 +283,12 @@ The "tables" array MUST include an entry for EVERY table ({total_tables} total).
 
 Guidelines:
 - Use the sample data to infer business meaning, not just technical definitions.
-- CRITICAL for value_descriptions: You MUST include a value_descriptions entry for EVERY column \
-that has "distinct_values" in the exploration data. These columns were selected because they have \
-fewer than {options.value_threshold} distinct values. For EACH such column, describe EVERY distinct \
-value — what it means in business context, what it represents, translate codes/abbreviations into \
-human-readable names. Even if the values seem self-explanatory (like city names or department names), \
-provide a display_name and brief description. This is critical for business users who need to \
-understand what each value represents. Do NOT skip any column that has distinct_values data.
+- CRITICAL for value_descriptions: See the "MANDATORY Value Descriptions" section above. \
+You MUST generate a value_descriptions entry for EVERY column listed there — ALL of them, \
+no exceptions. For each column, describe EVERY distinct value with a display_name and description. \
+Do NOT skip columns because values seem self-explanatory — country names, city names, category \
+names, titles ALL need value descriptions. Your value_descriptions array must match the count \
+specified in the checklist.
 - For glossary, define key business metrics and concepts you can infer from the data.
 - Do NOT generate the "example_queries" array — example queries are managed by the user.
 - Use the exact table names as shown in the schema (schema.table_name format).
