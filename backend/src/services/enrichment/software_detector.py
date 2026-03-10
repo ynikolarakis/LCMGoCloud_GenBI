@@ -192,13 +192,14 @@ class SoftwareDetector:
 
         search_count = 0
 
-        for _ in range(MAX_TOOL_ITERATIONS):
+        for iteration in range(MAX_TOOL_ITERATIONS):
             kwargs = {
                 "modelId": self._model_id,
                 "messages": messages,
                 "system": [{"text": system_prompt}],
                 "inferenceConfig": {"maxTokens": self._max_tokens},
             }
+            # Must always include toolConfig if history contains tool blocks
             if tool_config:
                 kwargs["toolConfig"] = tool_config
 
@@ -206,14 +207,17 @@ class SoftwareDetector:
             output_message = response["output"]["message"]
             messages.append(output_message)
 
-            if response["stopReason"] == "end_turn":
+            stop_reason = response["stopReason"]
+            logger.info("Converse iteration %d, stopReason=%s, search_count=%d", iteration, stop_reason, search_count)
+
+            if stop_reason == "end_turn":
                 # Extract final text
                 for block in output_message["content"]:
                     if "text" in block:
                         return block["text"]
                 return ""
 
-            if response["stopReason"] == "tool_use":
+            if stop_reason == "tool_use":
                 tool_results = []
                 for block in output_message["content"]:
                     if "toolUse" in block:
@@ -226,7 +230,10 @@ class SoftwareDetector:
                             result_text = self._execute_web_search(query)
                             search_count += 1
                         elif tool_use["name"] == "web_search":
-                            result_text = f"Search limit reached ({MAX_SEARCHES_PER_CALL} max). Please provide your answer now."
+                            result_text = (
+                                f"Search limit reached ({MAX_SEARCHES_PER_CALL} max). "
+                                "You must now provide your final JSON answer based on what you found."
+                            )
                         else:
                             result_text = f"Unknown tool: {tool_use['name']}"
 
@@ -240,6 +247,7 @@ class SoftwareDetector:
                 messages.append({"role": "user", "content": tool_results})
             else:
                 # Unexpected stop reason
+                logger.warning("Unexpected stopReason: %s", stop_reason)
                 break
 
         # Fallback: extract whatever text we have
@@ -256,10 +264,21 @@ class SoftwareDetector:
 
     def _parse_json_response(self, text: str) -> dict:
         text = text.strip()
+        if not text:
+            logger.warning("Empty LLM response for JSON parsing")
+            return {"detected": False, "software_name": "", "confidence": "", "reasoning": "Empty response"}
+        # Strip markdown code fences
         if text.startswith("```"):
             lines = text.split("\n")
             lines = [line for line in lines if not line.strip().startswith("```")]
-            text = "\n".join(lines)
+            text = "\n".join(lines).strip()
+        # Try to extract JSON from mixed text
+        if not text.startswith("{"):
+            start = text.find("{")
+            end = text.rfind("}") + 1
+            if start >= 0 and end > start:
+                text = text[start:end]
+        logger.info("LLM detection response: %s", text[:500])
         return json.loads(text)
 
     async def detect_software(
