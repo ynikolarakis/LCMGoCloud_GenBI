@@ -90,6 +90,9 @@ class Settings(BaseSettings):
     poc_jwt_expire_hours: int = 720  # 30 days
     poc_logo_dir: str = "/var/www/genbi/poc-logos"
 
+    # Web search (Tavily) for software detection
+    tavily_api_key: str = ""
+
     # Lab / Experimental optimization settings
     lab_max_tables: int = 10  # Max tables to include in optimized context
     lab_min_relevance_score: float = 2.0  # Skip tables below this score
